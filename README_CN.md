@@ -14,9 +14,8 @@ AI 驱动知识管理应用程序，让您从文档中创建智能笔记本。
 **项目地址：** https://github.com/smallnest/notex
 
 ![](docs/note2.png)
+
 </div>
-
-
 
 - Python 版: [pynotex](https://github.com/Beeta/pynotex)
 
@@ -86,11 +85,13 @@ EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 **可用的 OpenAI 模型：**
+
 - `gpt-4o-mini` - 快速且经济实惠（推荐）
 - `gpt-4o` - 最强大
 - `gpt-3.5-turbo` - 旧版本选项
 
 **小贴士：**
+
 - 您也可以通过修改 `OPENAI_BASE_URL` 来使用 Azure OpenAI 或其他兼容 OpenAI 的 API
 - 例如，使用 DeepSeek：`OPENAI_BASE_URL=https://api.deepseek.com/v1` 和 `OPENAI_MODEL=deepseek-chat`
 
@@ -110,12 +111,14 @@ OLLAMA_MODEL=llama3.2
 ```
 
 **可用的 Ollama 模型：**
+
 - `llama3.2` - 速度和质量的推荐平衡
 - `qwen2.5` - 中文内容效果优秀
 - `mistral` - 英文性能良好
 - `codellama` - 代码专用
 
 **小贴士：**
+
 - Ollama 模型完全在您的机器上运行 - 数据不会离开您的电脑
 - 确保在启动 Notex 之前 Ollama 正在运行
 - 更大的模型需要更多的内存和 CPU
@@ -162,15 +165,18 @@ go build -o notex .
 您可以通过三种方式向笔记本添加内容：
 
 **文件上传**
+
 - 点击 Sources 面板中的 "+" 按钮
 - 拖放文件或浏览选择
 - 支持格式：PDF、TXT、MD、DOCX、HTML
 
 **粘贴文本**
+
 - 选择 "Text" 标签
 - 输入标题并粘贴您的内容
 
 **从 URL**
+
 - 选择 "URL" 标签
 - 输入 URL 和可选标题
 
@@ -184,8 +190,8 @@ go build -o notex .
 
 点击任意转换卡片即可生成：
 
-| 转换类型   | 描述                                       |
-| ---------- | ------------------------------------------ |
+| 转换类型    | 描述                                       |
+| ----------- | ------------------------------------------ |
 | 📝 摘要     | 来源的精简概述                             |
 | ❓ FAQ      | 常见问题与答案                             |
 | 📚 学习指南 | 包含学习目标的教育材料                     |
