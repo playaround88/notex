@@ -1,6 +1,6 @@
 # Notex
 
-[中文](./README_CN.md) | English
+English | [中文](./README_CN.md) | [繁體中文](./README_zh-tw.md)
 
 <div align="center">
 
@@ -14,6 +14,7 @@ An AI-powered knowledge management application that lets you create intelligent 
 **Project URL:** https://github.com/smallnest/notex
 
 ![](docs/note2.png)
+
 </div>
 
 - Python clone: [pynotex](https://github.com/Beeta/pynotex)
@@ -84,11 +85,13 @@ EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 **Available OpenAI Models:**
+
 - `gpt-4o-mini` - Fast and cost-effective (recommended)
 - `gpt-4o` - Most capable
 - `gpt-3.5-turbo` - Legacy option
 
 **Tips:**
+
 - You can also use compatible OpenAI APIs like Azure OpenAI or other providers by changing `OPENAI_BASE_URL`
 - For example, to use DeepSeek: `OPENAI_BASE_URL=https://api.deepseek.com/v1` and `OPENAI_MODEL=deepseek-chat`
 
@@ -108,12 +111,14 @@ OLLAMA_MODEL=llama3.2
 ```
 
 **Available Ollama Models:**
+
 - `llama3.2` - Recommended balance of speed and quality
 - `qwen2.5` - Excellent for Chinese content
 - `mistral` - Good English performance
 - `codellama` - Specialized for code
 
 **Tips:**
+
 - Ollama models run entirely on your machine - no data leaves your computer
 - Make sure Ollama is running before starting Notex
 - Larger models require more RAM and CPU
@@ -160,15 +165,18 @@ go build -o notex .
 You can add content to your notebook in three ways:
 
 **File Upload**
+
 - Click the "+" button in the Sources panel
 - Drag and drop or browse for files
 - Supported: PDF, TXT, MD, DOCX, HTML
 
 **Paste Text**
+
 - Select the "Text" tab
 - Enter a title and paste your content
 
 **From URL**
+
 - Select the "URL" tab
 - Enter the URL and optional title
 
@@ -184,16 +192,16 @@ Click any transformation card to generate:
 
 | Transformation | Description                                                  |
 | -------------- | ------------------------------------------------------------ |
-| 📝 Summary      | Condensed overview of your sources                           |
-| ❓ FAQ          | Common questions and answers                                 |
-| 📚 Study Guide  | Educational material with learning objectives                |
-| 🗂️ Outline      | Hierarchical structure of topics                             |
-| 🎙️ Podcast      | Conversational script for audio content                      |
-| 📅 Timeline     | Chronological events from sources                            |
-| 📖 Glossary     | Key terms and definitions                                    |
-| ✍️ Quiz         | Assessment questions with answer key                         |
-| 📊 Infographic  | Hand-drawn style visual representation of your content       |
-| 🧠 Mindmap      | Visual hierarchical diagram of your sources using Mermaid.js |
+| 📝 Summary     | Condensed overview of your sources                           |
+| ❓ FAQ         | Common questions and answers                                 |
+| 📚 Study Guide | Educational material with learning objectives                |
+| 🗂️ Outline     | Hierarchical structure of topics                             |
+| 🎙️ Podcast     | Conversational script for audio content                      |
+| 📅 Timeline    | Chronological events from sources                            |
+| 📖 Glossary    | Key terms and definitions                                    |
+| ✍️ Quiz        | Assessment questions with answer key                         |
+| 📊 Infographic | Hand-drawn style visual representation of your content       |
+| 🧠 Mindmap     | Visual hierarchical diagram of your sources using Mermaid.js |
 
 Or use the custom prompt field for any other transformation.
 
