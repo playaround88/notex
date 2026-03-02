@@ -463,7 +463,7 @@ body {
 }
 
 .workspace-section {
-    padding-top: var(--space-xl);
+    /* padding-top: var(--space-xl); */
     padding-bottom: var(--space-md);
     border-bottom: none;
 }
@@ -581,7 +581,7 @@ body {
     flex-direction: column;
     min-height: 0;
     border-top: 1px solid var(--border-color);
-    margin-top: var(--space-xl);
+    /* margin-top: var(--space-xl); */
 }
 
 .section-notes .panel-header {
@@ -649,6 +649,7 @@ body {
 
 .panel-right {
     background: var(--bg-secondary);
+    overflow-y: auto;
 }
 
 .panel-header {
@@ -1137,6 +1138,7 @@ body {
     flex: 1;
     overflow-y: auto;
     padding: var(--space-md);
+    min-height: 180px;
 }
 
 /* Infographic Styles */
