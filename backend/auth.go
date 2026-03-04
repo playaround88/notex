@@ -264,6 +264,76 @@ func (h *AuthHandler) HandleMe(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
+// HandleTestLogin handles test mode login (bypasses OAuth)
+func (h *AuthHandler) HandleTestLogin(c *gin.Context) {
+	if !h.config.EnableTestMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Test mode is not enabled"})
+		return
+	}
+
+	ctx := context.Background()
+
+	// Create or get test user
+	testUser := &User{
+		ID:        h.config.TestUserID,
+		Email:     h.config.TestUserEmail,
+		Name:      h.config.TestUserName,
+		AvatarURL: h.config.TestUserAvatar,
+		Provider:  "test",
+	}
+
+	// Try to get existing user first
+	existingUser, err := h.store.GetUserByEmail(ctx, h.config.TestUserEmail)
+	if err == nil && existingUser != nil {
+		// User exists, use existing data
+		testUser = existingUser
+	} else {
+		// Create new user
+		if err := h.store.CreateUser(ctx, testUser); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create test user"})
+			return
+		}
+		// Get the created user
+		testUser, err = h.store.GetUserByEmail(ctx, h.config.TestUserEmail)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get test user"})
+			return
+		}
+	}
+
+	// Generate JWT
+	tokenString, err := GenerateJWT(testUser.ID, h.config.JWTSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+
+	// Log test login activity
+	activityLog := &ActivityLog{
+		UserID:       testUser.ID,
+		Action:       "login",
+		ResourceName: "test_mode",
+		Details:      `{"provider": "test", "email": "` + testUser.Email + `"}`,
+		IPAddress:    c.ClientIP(),
+		UserAgent:    c.GetHeader("User-Agent"),
+	}
+	if err := h.store.LogActivity(ctx, activityLog); err != nil {
+		golog.Errorf("failed to log test login activity: %v", err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": tokenString,
+		"user":  testUser,
+	})
+}
+
+// HandleTestMode returns whether test mode is enabled
+func (h *AuthHandler) HandleTestMode(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"enabled": h.config.EnableTestMode,
+	})
+}
+
 func toJson(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)

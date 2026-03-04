@@ -75,6 +75,13 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
+
+	// Test Mode
+	EnableTestMode     bool
+	TestUserID         string
+	TestUserName       string
+	TestUserEmail      string
+	TestUserAvatar     string
 }
 
 // loadEnv loads .env file if it exists (ignoring errors if file not found)
@@ -135,6 +142,12 @@ func LoadConfig() Config {
 		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", ""),
+
+		EnableTestMode:     getEnvBool("ENABLE_TEST_MODE", false),
+		TestUserID:         getEnv("TEST_USER_ID", "test-user-123"),
+		TestUserName:       getEnv("TEST_USER_NAME", "测试用户"),
+		TestUserEmail:      getEnv("TEST_USER_EMAIL", "test@example.com"),
+		TestUserAvatar:     getEnv("TEST_USER_AVATAR", ""),
 	}
 
 	// Auto-detect provider from base URL or model name

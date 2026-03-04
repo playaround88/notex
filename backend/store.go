@@ -692,6 +692,7 @@ func (s *Store) GetSourceByFileName(ctx context.Context, filename string) (*Sour
 	var metadataJSON string
 	var notebookMetadataJSON string
 	var createdAt, updatedAt, notebookCreatedAt, notebookUpdatedAt int64
+	var publicToken sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -707,7 +708,7 @@ func (s *Store) GetSourceByFileName(ctx context.Context, filename string) (*Sour
 		&src.ID, &src.NotebookID, &src.Name, &src.Type, &src.URL, &src.Content,
 		&src.FileName, &src.FileSize, &src.ChunkCount, &createdAt, &updatedAt, &metadataJSON,
 		&notebook.ID, &notebook.UserID, &notebook.Name, &notebook.Description,
-		&notebook.IsPublic, &notebook.PublicToken,
+		&notebook.IsPublic, &publicToken,
 		&notebookCreatedAt, &notebookUpdatedAt, &notebookMetadataJSON,
 	)
 
@@ -729,6 +730,12 @@ func (s *Store) GetSourceByFileName(ctx context.Context, filename string) (*Sour
 
 	notebook.CreatedAt = time.Unix(notebookCreatedAt, 0)
 	notebook.UpdatedAt = time.Unix(notebookUpdatedAt, 0)
+
+	if publicToken.Valid {
+		notebook.PublicToken = publicToken.String
+	} else {
+		notebook.PublicToken = ""
+	}
 
 	if notebookMetadataJSON != "" {
 		json.Unmarshal([]byte(notebookMetadataJSON), &notebook.Metadata)

@@ -64,10 +64,17 @@ func (vs *VectorStore) ExtractDocument(ctx context.Context, path string) (string
 	// Check if file needs markitdown conversion
 	ext := strings.ToLower(filepath.Ext(path))
 	if vs.cfg.EnableMarkitdown && vs.needsMarkitdown(ext) {
-		return vs.convertWithMarkitdown(path)
+		content, err := vs.convertWithMarkitdown(path)
+		if err != nil {
+			// markitdown failed, fall back to simple text extraction
+			golog.Warnf("[VectorStore] markitdown conversion failed for %s: %v, falling back to simple text extraction", path, err)
+			// Continue to fallback below
+		} else {
+			return content, nil
+		}
 	}
 
-	// Direct read for text files or when markitdown is disabled
+	// Direct read for text files or as fallback when markitdown fails
 	bytes, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -351,27 +358,44 @@ func (vs *VectorStore) ExtractFromURL(ctx context.Context, url string) (string, 
 		return "", fmt.Errorf("markitdown is disabled, cannot fetch URL content")
 	}
 
-	// Create temporary output file
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("markitdown_url_%d.md", os.Getpid()))
+	// Step 1: Use curl to download the webpage to a temporary HTML file
+	tmpHTMLFile := filepath.Join(os.TempDir(), fmt.Sprintf("webpage_%d.html", os.Getpid()))
+	tmpMDFile := filepath.Join(os.TempDir(), fmt.Sprintf("markitdown_url_%d.md", os.Getpid()))
 
-	// Run markitdown command with URL
-	cmd := exec.Command("markitdown", url, "-o", tmpFile)
+	// Use curl with user agent to download the webpage
+	curlCmd := exec.Command("curl", "-s", "-L", "-A", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "-o", tmpHTMLFile, url)
+	curlOutput, err := curlCmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("[VectorStore] curl error: %s\n", string(curlOutput))
+		return "", fmt.Errorf("failed to download webpage: %w, output: %s", err, string(curlOutput))
+	}
+
+	fmt.Printf("[VectorStore] Downloaded webpage to: %s\n", tmpHTMLFile)
+
+	// Step 2: Use markitdown to convert the local HTML file to markdown
+	cmd := exec.Command("markitdown", tmpHTMLFile, "-o", tmpMDFile)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("[VectorStore] markitdown error: %s\n", string(output))
-		return "", fmt.Errorf("failed to fetch URL content: %w, output: %s", err, string(output))
+		// Clean up HTML file on error
+		os.Remove(tmpHTMLFile)
+		return "", fmt.Errorf("failed to convert webpage to markdown: %w, output: %s", err, string(output))
 	}
 
-	// Read the converted markdown content
-	content, err := os.ReadFile(tmpFile)
+	// Step 3: Read the converted markdown content
+	content, err := os.ReadFile(tmpMDFile)
 	if err != nil {
+		// Clean up files on error
+		os.Remove(tmpHTMLFile)
+		os.Remove(tmpMDFile)
 		return "", fmt.Errorf("failed to read markitdown output: %w", err)
 	}
 
-	// Clean up temporary file
-	os.Remove(tmpFile)
+	// Step 4: Clean up temporary files
+	os.Remove(tmpHTMLFile)
+	os.Remove(tmpMDFile)
 
-	fmt.Printf("[VectorStore] URL content fetched successfully, output size: %d bytes\n", len(content))
+	fmt.Printf("[VectorStore] URL content fetched and converted successfully, output size: %d bytes\n", len(content))
 	return string(content), nil
 }
 

@@ -141,6 +141,9 @@ class OpenNotebook {
         // 初始化本地缓存 (5分钟TTL)
         this.cache = new LocalCache(5);
 
+        // Resource Tab Manager
+        this.resourceTabManager = new ResourceTabManager(this);
+
         // Note type name mapping
         this.noteTypeNameMap = {
             summary: '摘要',
@@ -675,6 +678,12 @@ class OpenNotebook {
                             </svg>
                             使用 Google 登录
                         </button>
+                        <button class="btn-login-provider btn-test-login" id="btnLoginTest" style="display: none;">
+                            <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M8 0C3.58 0 0 3.58 0 8s3.58 8 8 8 8-3.58 8-8-3.58-8-8-8zm1 12H7V7h2v5zm0-6H7V4h2v2z"/>
+                            </svg>
+                            使用测试账号登录
+                        </button>
                     </div>
                 </div>
             `;
@@ -690,9 +699,63 @@ class OpenNotebook {
             document.getElementById('btnLoginGoogle').addEventListener('click', () => {
                 this.loginWithProvider('google');
             });
+            document.getElementById('btnLoginTest').addEventListener('click', () => {
+                this.loginWithTestAccount();
+            });
         }
 
+        // Check if test mode is enabled and show test login button
+        this.checkTestMode().then(enabled => {
+            const testBtn = document.getElementById('btnLoginTest');
+            if (testBtn && enabled) {
+                testBtn.style.display = 'flex';
+            }
+        });
+
         modal.classList.add('active');
+    }
+
+    async checkTestMode() {
+        try {
+            const response = await fetch('/auth/test-mode');
+            if (response.ok) {
+                const data = await response.json();
+                return data.enabled || false;
+            }
+        } catch (error) {
+            console.warn('Failed to check test mode:', error);
+        }
+        return false;
+    }
+
+    async loginWithTestAccount() {
+        this.closeLoginModal();
+
+        try {
+            const response = await fetch('/auth/test-login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Test login failed');
+            }
+
+            const data = await response.json();
+            this.token = data.token;
+            this.currentUser = data.user;
+            localStorage.setItem('token', this.token);
+            document.cookie = `token=${this.token}; path=/; SameSite=Lax`;
+
+            await this.initAuth();
+            this.setStatus('测试账号登录成功');
+        } catch (error) {
+            console.error('Test login failed:', error);
+            this.showError('测试登录失败: ' + error.message);
+        }
     }
 
     closeLoginModal() {
@@ -971,6 +1034,11 @@ class OpenNotebook {
             t.classList.toggle('active', t.dataset.tab === tab);
         });
 
+        // Hide all resource preview containers
+        document.querySelectorAll('.resource-preview-container').forEach(el => {
+            el.style.display = 'none';
+        });
+
         // Update content visibility
         const chatWrapper = document.querySelector('.chat-messages-wrapper');
         const noteViewContainer = document.querySelector('.note-view-container');
@@ -997,6 +1065,16 @@ class OpenNotebook {
                 if (!this.currentPublicToken) {
                     this.renderNotesCompactGrid();
                 }
+            }
+        } else if (tab.toString().startsWith('resource_')) {
+            // Handle resource preview tabs
+            chatWrapper.style.display = 'none';
+            if (notesDetailsView) notesDetailsView.style.display = 'none';
+            if (noteViewContainer) noteViewContainer.style.display = 'none';
+
+            const resourceContainer = document.querySelector(`.resource-preview-container[data-tab-id="${tab}"]`);
+            if (resourceContainer) {
+                resourceContainer.style.display = 'flex';
             }
         }
     }
@@ -1529,8 +1607,14 @@ class OpenNotebook {
                 card.querySelector('.source-icon').innerHTML = icon;
 
                 const removeBtn = card.querySelector('.btn-remove-source');
-                removeBtn.addEventListener('click', () => {
+                removeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
                     this.removeSource(source.id);
+                });
+
+                // Add click event to open resource preview
+                card.addEventListener('click', () => {
+                    this.resourceTabManager.openTab(source);
                 });
 
                 container.appendChild(clone);
@@ -1591,6 +1675,11 @@ class OpenNotebook {
             if (removeBtn) {
                 removeBtn.style.display = 'none';
             }
+
+            // Add click event to open resource preview
+            card.addEventListener('click', () => {
+                this.resourceTabManager.openTab(source);
+            });
 
             container.appendChild(clone);
         });
@@ -2618,6 +2707,1138 @@ class OpenNotebook {
             notebookCard.querySelector('.stat-sources').textContent = `${sources.length} 来源`;
             notebookCard.querySelector('.stat-notes').textContent = `${notes.length} 笔记`;
         }
+    }
+}
+
+// ============================================
+// Resource Tab Manager
+// ============================================
+class ResourceTabManager {
+    constructor(app) {
+        this.app = app;
+        this.openTabs = new Map();  // tabId -> { sourceId, sourceName, sourceType, element }
+        this.activeTabId = null;
+        this.nextTabId = 1;
+        this.previewers = new Map();  // tabId -> Previewer instance
+    }
+
+    openTab(source) {
+        // Check if tab already exists
+        for (const [tabId, tab] of this.openTabs) {
+            if (tab.sourceId === source.id) {
+                this.switchTab(tabId);
+                return;
+            }
+        }
+
+        const tabId = `resource_${this.nextTabId++}`;
+        const tabData = {
+            tabId,
+            sourceId: source.id,
+            sourceName: source.name,
+            sourceType: source.type,
+            source: source
+        };
+        this.openTabs.set(tabId, tabData);
+
+        // Create tab button
+        this.createTabButton(tabData);
+
+        // Create tab content
+        this.createTabContent(tabData);
+
+        // Switch to new tab
+        this.switchTab(tabId);
+    }
+
+    closeTab(tabId) {
+        const tab = this.openTabs.get(tabId);
+        if (!tab) return;
+
+        // Remove tab button
+        const tabBtn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+        if (tabBtn) tabBtn.remove();
+
+        // Remove tab content
+        const tabContent = document.querySelector(`.resource-preview-container[data-tab-id="${tabId}"]`);
+        if (tabContent) tabContent.remove();
+
+        // Destroy previewer
+        const previewer = this.previewers.get(tabId);
+        if (previewer && previewer.destroy) {
+            previewer.destroy();
+        }
+        this.previewers.delete(tabId);
+
+        this.openTabs.delete(tabId);
+
+        // Switch to another tab if active was closed
+        if (this.activeTabId === tabId) {
+            const remainingTabs = Array.from(this.openTabs.keys());
+            if (remainingTabs.length > 0) {
+                this.switchTab(remainingTabs[0]);
+            } else {
+                this.activeTabId = null;
+                this.app.switchPanelTab('chat');
+            }
+        }
+    }
+
+    switchTab(tabId) {
+        this.activeTabId = tabId;
+
+        // Update tab button states
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === tabId);
+        });
+
+        // Update content visibility
+        const chatWrapper = document.querySelector('.chat-messages-wrapper');
+        const noteViewContainer = document.querySelector('.note-view-container');
+        const notesDetailsView = document.querySelector('.notes-details-view');
+
+        // Hide all resource preview containers
+        document.querySelectorAll('.resource-preview-container').forEach(el => {
+            el.style.display = 'none';
+        });
+
+        // Show selected tab content
+        const tabContent = document.querySelector(`.resource-preview-container[data-tab-id="${tabId}"]`);
+        if (tabContent) {
+            chatWrapper.style.display = 'none';
+            if (notesDetailsView) notesDetailsView.style.display = 'none';
+            if (noteViewContainer) noteViewContainer.style.display = 'none';
+            tabContent.style.display = 'flex';
+        }
+    }
+
+    closeAllResourceTabs() {
+        const tabIds = Array.from(this.openTabs.keys());
+        tabIds.forEach(tabId => this.closeTab(tabId));
+    }
+
+    createTabButton(tabData) {
+        const tabsContainer = document.getElementById('centerPanelTabs');
+        if (!tabsContainer) return;
+
+        const tabBtn = document.createElement('button');
+        tabBtn.className = 'tab-btn';
+        tabBtn.dataset.tab = tabData.tabId;
+        tabBtn.innerHTML = `
+            <span class="tab-title">${this.truncateText(tabData.sourceName, 20)}</span>
+            <span class="tab-close">×</span>
+        `;
+
+        // Close button event
+        tabBtn.querySelector('.tab-close').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.closeTab(tabData.tabId);
+        });
+
+        // Tab click event
+        tabBtn.addEventListener('click', () => {
+            this.switchTab(tabData.tabId);
+        });
+
+        // Insert after notes_list tab (笔记列表 tab), or at the end if not found
+        const notesListTab = tabsContainer.querySelector('.tab-btn[data-tab="notes_list"]');
+        if (notesListTab && !notesListTab.classList.contains('hidden')) {
+            notesListTab.insertAdjacentElement('afterend', tabBtn);
+        } else {
+            tabsContainer.appendChild(tabBtn);
+        }
+    }
+
+    createTabContent(tabData) {
+        const chatWrapper = document.querySelector('.chat-messages-wrapper');
+        if (!chatWrapper) return;
+
+        const template = document.getElementById('resourcePreviewTemplate');
+        if (!template) return;
+
+        const clone = template.content.cloneNode(true);
+        const container = clone.querySelector('.resource-preview-container');
+        container.dataset.tabId = tabData.tabId;
+
+        // Set title
+        container.querySelector('.resource-title').textContent = tabData.sourceName;
+
+        // Close button event
+        container.querySelector('[data-action="close"]').addEventListener('click', () => {
+            this.closeTab(tabData.tabId);
+        });
+
+        // Create previewer based on source type
+        const body = container.querySelector('.resource-body');
+        const previewer = this.createPreviewer(tabData, body);
+        this.previewers.set(tabData.tabId, previewer);
+
+        // Insert after chat wrapper
+        chatWrapper.insertAdjacentElement('afterend', container);
+
+        // Load preview
+        previewer.load();
+    }
+
+    createPreviewer(tabData, body) {
+        const sourceType = this.determineSourceType(tabData.source);
+
+        switch (sourceType) {
+            case 'text':
+                return new TextPreviewer(this.app, tabData, body);
+            case 'image':
+                return new ImagePreviewer(this.app, tabData, body);
+            case 'audio':
+                return new AudioPreviewer(this.app, tabData, body);
+            case 'pdf':
+                return new PdfPreviewer(this.app, tabData, body);
+            case 'url':
+                return new UrlPreviewer(this.app, tabData, body);
+            default:
+                return new TextPreviewer(this.app, tabData, body);
+        }
+    }
+
+    determineSourceType(source) {
+        if (source.type === 'url') return 'url';
+
+        if (source.type === 'text') return 'text';
+
+        if (source.file_name) {
+            const ext = source.file_name.toLowerCase().split('.').pop();
+            const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
+            const audioExtensions = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'];
+            const pdfExtensions = ['pdf'];
+
+            if (pdfExtensions.includes(ext)) return 'pdf';
+            if (imageExtensions.includes(ext)) return 'image';
+            if (audioExtensions.includes(ext)) return 'audio';
+        }
+
+        // Default to text
+        return 'text';
+    }
+
+    truncateText(text, maxLength) {
+        if (text.length <= maxLength) return text;
+        return text.substring(0, maxLength - 3) + '...';
+    }
+}
+
+// ============================================
+// Base Previewer Class
+// ============================================
+class BasePreviewer {
+    constructor(app, tabData, container) {
+        this.app = app;
+        this.tabData = tabData;
+        this.container = container;
+        this.loadingEl = null;
+        this.errorEl = null;
+        this.contentEl = null;
+    }
+
+    load() {
+        throw new Error('load() must be implemented');
+    }
+
+    destroy() {
+        // Override if needed
+    }
+
+    showLoading() {
+        this.contentEl?.classList.add('hidden');
+        this.errorEl?.classList.add('hidden');
+        this.loadingEl?.classList.remove('hidden');
+        // Clear the inline display style on the resource-body container
+        this.container.style.display = '';
+    }
+
+    hideLoading() {
+        this.loadingEl?.classList.add('hidden');
+    }
+
+    showError(message) {
+        this.loadingEl?.classList.add('hidden');
+        this.contentEl?.classList.add('hidden');
+        this.errorEl?.classList.remove('hidden');
+        // Clear the inline display style on the resource-body container
+        this.container.style.display = '';
+        const errorMsgEl = this.errorEl?.querySelector('.error-message');
+        if (errorMsgEl) {
+            errorMsgEl.textContent = message;
+        } else if (this.errorEl) {
+            // Fallback if error-message element doesn't exist
+            this.errorEl.textContent = message;
+        }
+    }
+
+    showContent() {
+        this.loadingEl?.classList.add('hidden');
+        this.errorEl?.classList.add('hidden');
+        this.contentEl?.classList.remove('hidden');
+        // Clear the inline display style on the resource-body container
+        this.container.style.display = '';
+        // Also show the resource-body by removing inline style
+        const resourceBody = this.container.closest('.resource-preview-content')?.querySelector('.resource-body');
+        if (resourceBody) {
+            resourceBody.style.display = '';
+        }
+    }
+
+    async fetchSource() {
+        try {
+            const endpoint = this.app.currentPublicToken
+                ? `/public/notebooks/${this.app.currentPublicToken}/sources/${this.tabData.sourceId}`
+                : `/api/notebooks/${this.app.currentNotebook.id}/sources/${this.tabData.sourceId}`;
+
+            const headers = {};
+            if (this.app.token && !this.app.currentPublicToken) {
+                headers['Authorization'] = `Bearer ${this.app.token}`;
+            }
+
+            const response = await fetch(endpoint, { headers });
+            if (!response.ok) throw new Error('Failed to fetch source');
+            return await response.json();
+        } catch (error) {
+            console.error('Failed to fetch source:', error);
+            throw error;
+        }
+    }
+}
+
+// ============================================
+// Text Previewer
+// ============================================
+class TextPreviewer extends BasePreviewer {
+    constructor(app, tabData, container) {
+        super(app, tabData, container);
+        this.searchQuery = '';
+        this.matches = [];
+        this.currentMatchIndex = -1;
+        this.rawText = ''; // Store original markdown text for search
+    }
+
+    load() {
+        // Create text preview UI
+        const template = document.getElementById('textPreviewTemplate');
+        if (!template) return;
+
+        const clone = template.content.cloneNode(true);
+        this.container.appendChild(clone);
+
+        // Now setup elements after template is appended
+        this.setupElements();
+        this.bindEvents();
+
+        this.loadContent();
+    }
+
+    setupElements() {
+        // Get elements from the preview template content (this.container is the resource-body div)
+        // The text/content was added from textPreviewTemplate, so query this.container directly
+        const previewContent = this.container.parentElement;
+        this.loadingEl = previewContent?.querySelector('.resource-loading');
+        this.errorEl = previewContent?.querySelector('.resource-error');
+
+        // Don't query .resource-body again - this.container IS the resource-body div
+        // The text-content element should be a child of this.container
+        this.contentEl = this.container.querySelector('.text-content');
+        this.searchInput = this.container.querySelector('.text-search-input');
+        this.searchPrevBtn = this.container.querySelector('.btn-search-prev');
+        this.searchNextBtn = this.container.querySelector('.btn-search-next');
+        this.searchClearBtn = this.container.querySelector('.btn-search-clear');
+        this.searchCountEl = this.container.querySelector('.search-count');
+    }
+
+    bindEvents() {
+        this.searchInput.addEventListener('input', (e) => {
+            this.search(e.target.value);
+        });
+
+        this.searchPrevBtn.addEventListener('click', () => {
+            this.navigateMatch(-1);
+        });
+
+        this.searchNextBtn.addEventListener('click', () => {
+            this.navigateMatch(1);
+        });
+
+        this.searchClearBtn.addEventListener('click', () => {
+            this.searchInput.value = '';
+            this.search('');
+            this.searchInput.focus();
+        });
+    }
+
+    async loadContent() {
+        this.showLoading();
+
+        try {
+            const source = await this.fetchSource();
+            const text = source.content || '';
+
+            if (text) {
+                // Store raw text for search
+                this.rawText = text;
+                // Render markdown to HTML
+                this.contentEl.innerHTML = marked.parse(text);
+                this.showContent();
+            } else {
+                this.showError('该资源没有可显示的文本内容');
+            }
+        } catch (error) {
+            this.showError('加载文本失败: ' + error.message);
+        }
+    }
+
+    search(query) {
+        this.searchQuery = query;
+        // Reset to original rendered markdown when clearing search
+        this.contentEl.innerHTML = marked.parse(this.rawText);
+
+        if (!query) {
+            this.matches = [];
+            this.currentMatchIndex = -1;
+            this.updateSearchUI();
+            return;
+        }
+
+        // Find matches in raw text
+        const text = this.rawText;
+        this.matches = [];
+        let match;
+        const regex = new RegExp(query.replace(/[.*+?^$()|[\]\\]/g, '\\$&'), 'gi');
+
+        while ((match = regex.exec(text)) !== null) {
+            this.matches.push({
+                start: match.index,
+                end: match.index + match[0].length,
+                text: match[0]
+            });
+        }
+
+        if (this.matches.length > 0) {
+            this.currentMatchIndex = 0;
+            this.highlightMatches();
+            this.scrollToMatch(this.currentMatchIndex);
+        } else {
+            this.currentMatchIndex = -1;
+        }
+
+        this.updateSearchUI();
+    }
+
+    highlightMatches() {
+        // Highlight matches in the raw text, then re-render
+        const text = this.rawText;
+        let html = '';
+        let lastIndex = 0;
+
+        this.matches.forEach((match, index) => {
+            // Escape text before the match
+            html += this.escapeHtml(text.substring(lastIndex, match.start));
+            const isActive = index === this.currentMatchIndex;
+            html += `<span class="search-highlight ${isActive ? 'active' : ''}">${this.escapeHtml(match.text)}</span>`;
+            lastIndex = match.end;
+        });
+
+        // Add remaining text after last match
+        html += this.escapeHtml(text.substring(lastIndex));
+
+        // Set as raw markdown with highlight spans, then render
+        this.contentEl.innerHTML = marked.parse(html);
+    }
+
+    scrollToMatch(index) {
+        if (index < 0 || index >= this.matches.length) return;
+
+        const match = this.matches[index];
+        const textNodes = this.contentEl.querySelectorAll('.search-highlight');
+        const targetNode = textNodes[index];
+
+        if (targetNode) {
+            targetNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
+    navigateMatch(direction) {
+        if (this.matches.length === 0) return;
+
+        this.currentMatchIndex += direction;
+
+        if (this.currentMatchIndex < 0) {
+            this.currentMatchIndex = this.matches.length - 1;
+        } else if (this.currentMatchIndex >= this.matches.length) {
+            this.currentMatchIndex = 0;
+        }
+
+        this.highlightMatches();
+        this.scrollToMatch(this.currentMatchIndex);
+        this.updateSearchUI();
+    }
+
+    updateSearchUI() {
+        if (this.matches.length > 0) {
+            this.searchCountEl.textContent = `${this.currentMatchIndex + 1} / ${this.matches.length}`;
+            this.searchPrevBtn.disabled = false;
+            this.searchNextBtn.disabled = false;
+        } else {
+            this.searchCountEl.textContent = this.searchQuery ? '无匹配' : '';
+            this.searchPrevBtn.disabled = true;
+            this.searchNextBtn.disabled = true;
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+}
+
+// ============================================
+// Image Previewer
+// ============================================
+class ImagePreviewer extends BasePreviewer {
+    constructor(app, tabData, container) {
+        super(app, tabData, container);
+        this.scale = 1.0;
+        this.rotation = 0;
+        this.isDragging = false;
+        this.lastMousePos = { x: 0, y: 0 };
+        this.translateX = 0;
+        this.translateY = 0;
+    }
+
+    load() {
+        const template = document.getElementById('imagePreviewTemplate');
+        if (!template) return;
+
+        const clone = template.content.cloneNode(true);
+        this.container.appendChild(clone);
+
+        this.setupElements();
+        this.bindEvents();
+
+        this.loadContent();
+    }
+
+    setupElements() {
+        // Get elements from preview template content
+        const previewContent = this.container.parentElement;
+        this.loadingEl = previewContent?.querySelector('.resource-loading');
+        this.errorEl = previewContent?.querySelector('.resource-error');
+
+        // Don't query .resource-body - this.container IS the resource-body div
+        // Image preview elements are direct children of this.container
+        this.zoomInBtn = this.container.querySelector('.btn-image-zoom-in');
+        this.zoomOutBtn = this.container.querySelector('.btn-image-zoom-out');
+        this.resetBtn = this.container.querySelector('.btn-image-reset');
+        this.rotateLeftBtn = this.container.querySelector('.btn-image-rotate-left');
+        this.rotateRightBtn = this.container.querySelector('.btn-image-rotate-right');
+        this.zoomLevelEl = this.container.querySelector('.zoom-level');
+        this.viewport = this.container.querySelector('.image-viewport');
+        this.img = this.container.querySelector('.image-preview-img');
+    }
+
+    bindEvents() {
+        this.zoomInBtn.addEventListener('click', () => this.zoom(0.2));
+        this.zoomOutBtn.addEventListener('click', () => this.zoom(-0.2));
+        this.resetBtn.addEventListener('click', () => this.reset());
+        this.rotateLeftBtn.addEventListener('click', () => this.rotate(-90));
+        this.rotateRightBtn.addEventListener('click', () => this.rotate(90));
+
+        // Mouse wheel zoom
+        this.viewport.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            this.zoom(delta);
+        });
+
+        // Drag to pan - save handler references for cleanup
+        this.mouseMoveHandler = (e) => {
+            if (!this.isDragging) return;
+            const dx = e.clientX - this.lastMousePos.x;
+            const dy = e.clientY - this.lastMousePos.y;
+            this.translateX += dx;
+            this.translateY += dy;
+            this.lastMousePos = { x: e.clientX, y: e.clientY };
+            this.updateTransform();
+        };
+
+        this.mouseUpHandler = () => {
+            this.isDragging = false;
+            this.viewport.style.cursor = 'grab';
+        };
+
+        this.viewport.addEventListener('mousedown', (e) => {
+            this.isDragging = true;
+            this.lastMousePos = { x: e.clientX, y: e.clientY };
+            this.viewport.style.cursor = 'grabbing';
+        });
+
+        document.addEventListener('mousemove', this.mouseMoveHandler);
+        document.addEventListener('mouseup', this.mouseUpHandler);
+    }
+
+    async loadContent() {
+        this.showLoading();
+
+        try {
+            const source = await this.fetchSource();
+            const fileUrl = source.file_name ? `/api/files/${source.file_name}` : null;
+
+            if (fileUrl) {
+                // Fetch image with authentication first
+                const headers = {};
+                if (this.app.token && !this.app.currentPublicToken) {
+                    headers['Authorization'] = `Bearer ${this.app.token}`;
+                }
+
+                const response = await fetch(fileUrl, { headers });
+                if (!response.ok) {
+                    throw new Error(`Failed to load image: ${response.status}`);
+                }
+
+                const blob = await response.blob();
+                this.img.src = URL.createObjectURL(blob);
+
+                this.img.addEventListener('load', () => {
+                    this.showContent();
+                    this.reset();
+                }, { once: true });
+
+                this.img.addEventListener('error', () => {
+                    this.showError('加载图片失败');
+                }, { once: true });
+            } else {
+                this.showError('该资源没有可显示的图片');
+            }
+        } catch (error) {
+            console.error('Image loading error:', error);
+            this.showError('加载图片失败: ' + error.message);
+        }
+    }
+
+    zoom(delta) {
+        this.scale = Math.max(0.1, Math.min(5, this.scale + delta));
+        this.updateTransform();
+        this.updateZoomLevel();
+    }
+
+    rotate(angle) {
+        this.rotation = (this.rotation + angle) % 360;
+        this.updateTransform();
+    }
+
+    reset() {
+        this.scale = 1.0;
+        this.rotation = 0;
+        this.translateX = 0;
+        this.translateY = 0;
+        this.updateTransform();
+        this.updateZoomLevel();
+    }
+
+    updateTransform() {
+        this.img.style.transform = `translate(${this.translateX}px, ${this.translateY}px) scale(${this.scale}) rotate(${this.rotation}deg)`;
+    }
+
+    updateZoomLevel() {
+        this.zoomLevelEl.textContent = Math.round(this.scale * 100) + '%';
+    }
+
+    destroy() {
+        // Clean up event listeners to prevent memory leaks
+        if (this.mouseMoveHandler) {
+            document.removeEventListener('mousemove', this.mouseMoveHandler);
+        }
+        if (this.mouseUpHandler) {
+            document.removeEventListener('mouseup', this.mouseUpHandler);
+        }
+    }
+}
+
+// ============================================
+// Audio Previewer
+// ============================================
+class AudioPreviewer extends BasePreviewer {
+    constructor(app, tabData, container) {
+        super(app, tabData, container);
+        this.audio = null;
+    }
+
+    load() {
+        const template = document.getElementById('audioPreviewTemplate');
+        if (!template) return;
+
+        const clone = template.content.cloneNode(true);
+        this.container.appendChild(clone);
+
+        this.setupElements();
+        this.bindEvents();
+
+        this.loadContent();
+    }
+
+    setupElements() {
+        // Get elements from preview template content
+        const previewContent = this.container.parentElement;
+        this.loadingEl = previewContent?.querySelector('.resource-loading');
+        this.errorEl = previewContent?.querySelector('.resource-error');
+
+        // Don't query .resource-body - this.container IS the resource-body div
+        // Audio preview elements are direct children of this.container
+        this.audio = this.container.querySelector('.audio-player');
+        this.playBtn = this.container.querySelector('.btn-audio-play');
+        this.iconPlay = this.container.querySelector('.icon-play');
+        this.iconPause = this.container.querySelector('.icon-pause');
+        this.progressBar = this.container.querySelector('.audio-progress-bar');
+        this.progressFill = this.container.querySelector('.audio-progress-fill');
+        this.currentTimeEl = this.container.querySelector('.current-time');
+        this.durationEl = this.container.querySelector('.duration');
+        this.muteBtn = this.container.querySelector('.btn-audio-mute');
+        this.iconVolumeHigh = this.container.querySelector('.icon-volume-high');
+        this.iconVolumeLow = this.container.querySelector('.icon-volume-low');
+        this.iconMute = this.container.querySelector('.icon-mute');
+        this.volumeSlider = this.container.querySelector('.audio-volume-slider');
+        this.transcriptToggle = this.container.querySelector('.btn-transcript-toggle');
+        this.transcriptContent = this.container.querySelector('.transcript-content');
+        this.transcriptText = this.container.querySelector('.transcript-text');
+    }
+
+    bindEvents() {
+        this.playBtn.addEventListener('click', () => this.togglePlay());
+        this.audio.addEventListener('timeupdate', () => this.updateProgress());
+        this.audio.addEventListener('loadedmetadata', () => this.updateDuration());
+        this.audio.addEventListener('ended', () => this.onEnded());
+
+        this.progressBar.addEventListener('click', (e) => {
+            const rect = this.progressBar.getBoundingClientRect();
+            const percent = (e.clientX - rect.left) / rect.width;
+            this.audio.currentTime = percent * this.audio.duration;
+        });
+
+        this.muteBtn.addEventListener('click', () => this.toggleMute());
+        this.volumeSlider.addEventListener('input', (e) => {
+            this.audio.volume = e.target.value;
+            this.updateVolumeIcons();
+        });
+
+        this.transcriptToggle.addEventListener('click', () => {
+            this.transcriptContent.classList.toggle('collapsed');
+            this.transcriptToggle.textContent = this.transcriptContent.classList.contains('collapsed') ? '展开' : '收起';
+        });
+
+        // Keyboard shortcut - save handler reference for cleanup
+        this.keydownHandler = (e) => {
+            if (e.key === ' ') {
+                e.preventDefault();
+                this.togglePlay();
+            }
+        };
+
+        this.container.addEventListener('keydown', this.keydownHandler);
+    }
+
+    async loadContent() {
+        this.showLoading();
+
+        try {
+            const source = await this.fetchSource();
+
+            const fileUrl = source.file_name ? `/api/files/${source.file_name}` : null;
+
+            if (fileUrl) {
+                // Fetch audio with authentication first
+                const headers = {};
+                if (this.app.token && !this.app.currentPublicToken) {
+                    headers['Authorization'] = `Bearer ${this.app.token}`;
+                }
+
+                const response = await fetch(fileUrl, { headers });
+                if (!response.ok) {
+                    throw new Error(`Failed to load audio: ${response.status}`);
+                }
+
+                const blob = await response.blob();
+                this.audio.src = URL.createObjectURL(blob);
+
+                this.audio.addEventListener('loadeddata', () => {
+                    this.showContent();
+                }, { once: true });
+
+                this.audio.addEventListener('error', () => {
+                    this.showError('加载音频失败');
+                }, { once: true });
+            } else {
+                this.showError('该资源没有可播放的音频');
+            }
+
+            // Load transcript
+            if (source.content) {
+                if (this.transcriptText) {
+                    this.transcriptText.textContent = source.content;
+                }
+                // Don't add collapsed class - keep transcript visible by default
+                // User can click the toggle button to collapse/expand
+                this.transcriptContent.classList.remove('collapsed');
+                this.transcriptToggle.textContent = '收起';
+            } else {
+                this.transcriptContent.style.display = 'none';
+                this.transcriptToggle.parentElement.style.display = 'none';
+            }
+        } catch (error) {
+            console.error('Audio loading error:', error);
+            this.showError('加载音频失败: ' + error.message);
+        }
+    }
+
+    togglePlay() {
+        if (this.audio.paused) {
+            this.audio.play();
+            this.iconPlay.style.display = 'none';
+            this.iconPause.style.display = 'block';
+        } else {
+            this.audio.pause();
+            this.iconPlay.style.display = 'block';
+            this.iconPause.style.display = 'none';
+        }
+    }
+
+    onEnded() {
+        this.iconPlay.style.display = 'block';
+        this.iconPause.style.display = 'none';
+    }
+
+    updateProgress() {
+        const percent = (this.audio.currentTime / this.audio.duration) * 100;
+        this.progressFill.style.width = percent + '%';
+        this.currentTimeEl.textContent = this.formatTime(this.audio.currentTime);
+    }
+
+    updateDuration() {
+        this.durationEl.textContent = this.formatTime(this.audio.duration);
+    }
+
+    formatTime(seconds) {
+        if (isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    toggleMute() {
+        this.audio.muted = !this.audio.muted;
+        this.updateVolumeIcons();
+    }
+
+    updateVolumeIcons() {
+        if (this.audio.muted || this.audio.volume === 0) {
+            this.iconVolumeHigh.style.display = 'none';
+            this.iconVolumeLow.style.display = 'none';
+            this.iconMute.style.display = 'block';
+        } else if (this.audio.volume < 0.5) {
+            this.iconVolumeHigh.style.display = 'none';
+            this.iconVolumeLow.style.display = 'block';
+            this.iconMute.style.display = 'none';
+        } else {
+            this.iconVolumeHigh.style.display = 'block';
+            this.iconVolumeLow.style.display = 'none';
+            this.iconMute.style.display = 'none';
+        }
+    }
+
+    destroy() {
+        // Clean up keyboard event listener
+        if (this.keydownHandler) {
+            this.container.removeEventListener('keydown', this.keydownHandler);
+        }
+    }
+}
+
+// ============================================
+// PDF Previewer
+// ============================================
+class PdfPreviewer extends BasePreviewer {
+    constructor(app, tabData, container) {
+        super(app, tabData, container);
+        this.pdfDoc = null;
+        this.currentPage = 1;
+        this.totalPages = 0;
+        this.scale = 1.0;
+        this.canvas = null;
+        this.ctx = null;
+    }
+
+    load() {
+        const template = document.getElementById('pdfPreviewTemplate');
+        if (!template) return;
+
+        const clone = template.content.cloneNode(true);
+        this.container.appendChild(clone);
+
+        this.setupElements();
+        this.bindEvents();
+
+        this.loadContent();
+    }
+
+    setupElements() {
+        // Get elements from preview template content
+        const previewContent = this.container.parentElement;
+        this.loadingEl = previewContent?.querySelector('.resource-loading');
+        this.errorEl = previewContent?.querySelector('.resource-error');
+        this.contentEl = this.container.querySelector('.pdf-viewport');
+
+        // Don't query .resource-body - this.container IS the resource-body div
+        // PDF preview elements are direct children of this.container
+        this.prevPageBtn = this.container.querySelector('.btn-pdf-prev');
+        this.nextPageBtn = this.container.querySelector('.btn-pdf-next');
+        this.zoomInBtn = this.container.querySelector('.btn-pdf-zoom-in');
+        this.zoomOutBtn = this.container.querySelector('.btn-pdf-zoom-out');
+        this.fitWidthBtn = this.container.querySelector('.btn-pdf-fit-width');
+        this.currentPageEl = this.container.querySelector('.current-page');
+        this.totalPagesEl = this.container.querySelector('.total-pages');
+        this.zoomLevelEl = this.container.querySelector('.pdf-zoom-level');
+        this.canvas = this.container.querySelector('.pdf-canvas');
+        this.ctx = this.canvas?.getContext('2d');
+    }
+
+    bindEvents() {
+        this.prevPageBtn.addEventListener('click', () => this.changePage(-1));
+        this.nextPageBtn.addEventListener('click', () => this.changePage(1));
+        this.zoomInBtn.addEventListener('click', () => this.zoom(0.2));
+        this.zoomOutBtn.addEventListener('click', () => this.zoom(-0.2));
+        this.fitWidthBtn.addEventListener('click', () => this.fitWidth());
+    }
+
+    async loadContent() {
+        this.showLoading();
+
+        try {
+            const source = await this.fetchSource();
+            const fileUrl = source.file_name ? `/api/files/${source.file_name}` : null;
+
+            if (!fileUrl) {
+                this.showError('该资源没有可显示的 PDF');
+                return;
+            }
+
+            // Fetch PDF with authentication first
+            const headers = {};
+            if (this.app.token && !this.app.currentPublicToken) {
+                headers['Authorization'] = `Bearer ${this.app.token}`;
+            }
+
+            const response = await fetch(fileUrl, { headers });
+            if (!response.ok) {
+                throw new Error(`Failed to load PDF: ${response.status} ${response.statusText}`);
+            }
+
+            const pdfData = await response.arrayBuffer();
+
+            // Check if pdfjsLib is available
+            if (typeof pdfjsLib === 'undefined') {
+                throw new Error('PDF.js library is not loaded');
+            }
+
+            // Load PDF using PDF.js with the fetched data
+            const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+            this.pdfDoc = await loadingTask.promise;
+            this.totalPages = this.pdfDoc.numPages;
+
+            this.totalPagesEl.textContent = this.totalPages;
+            this.updatePageButtons();
+
+            this.showContent();
+            this.renderPage(this.currentPage);
+        } catch (error) {
+            console.error('PDF loading error:', error);
+            this.showError('加载 PDF 失败: ' + error.message);
+        }
+    }
+
+    async renderPage(pageNum) {
+        if (!this.pdfDoc) return;
+
+        this.currentPage = pageNum;
+        this.currentPageEl.textContent = pageNum;
+        this.updatePageButtons();
+
+        try {
+            const page = await this.pdfDoc.getPage(pageNum);
+            const viewport = page.getViewport({ scale: this.scale });
+
+            this.canvas.height = viewport.height;
+            this.canvas.width = viewport.width;
+
+            const renderContext = {
+                canvasContext: this.ctx,
+                viewport: viewport
+            };
+
+            await page.render(renderContext).promise;
+        } catch (error) {
+            console.error('PDF render error:', error);
+        }
+    }
+
+    changePage(delta) {
+        const newPage = this.currentPage + delta;
+        if (newPage >= 1 && newPage <= this.totalPages) {
+            this.renderPage(newPage);
+        }
+    }
+
+    zoom(delta) {
+        this.scale = Math.max(0.25, Math.min(3, this.scale + delta));
+        this.updateZoomLevel();
+        this.renderPage(this.currentPage);
+    }
+
+    fitWidth() {
+        const containerWidth = this.container.querySelector('.pdf-viewport')?.clientWidth || 800;
+        if (!this.pdfDoc || this.currentPage < 1) return;
+
+        this.pdfDoc.getPage(this.currentPage).then(page => {
+            const viewport = page.getViewport({ scale: 1.0 });
+            this.scale = (containerWidth - 40) / viewport.width;
+            this.updateZoomLevel();
+            this.renderPage(this.currentPage);
+        });
+    }
+
+    updatePageButtons() {
+        this.prevPageBtn.disabled = this.currentPage <= 1;
+        this.nextPageBtn.disabled = this.currentPage >= this.totalPages;
+    }
+
+    updateZoomLevel() {
+        this.zoomLevelEl.textContent = Math.round(this.scale * 100) + '%';
+    }
+
+    destroy() {
+        if (this.pdfDoc) {
+            this.pdfDoc.destroy();
+            this.pdfDoc = null;
+        }
+    }
+}
+
+// ============================================
+// URL Previewer
+// ============================================
+class UrlPreviewer extends BasePreviewer {
+    constructor(app, tabData, container) {
+        super(app, tabData, container);
+        this.url = '';
+    }
+
+    load() {
+        const template = document.getElementById('urlPreviewTemplate');
+        if (!template) return;
+
+        const clone = template.content.cloneNode(true);
+        this.container.appendChild(clone);
+
+        this.setupElements();
+        this.bindEvents();
+
+        this.loadContent();
+    }
+
+    setupElements() {
+        // Get elements from preview template content
+        const previewContent = this.container.parentElement;
+        this.loadingEl = previewContent?.querySelector('.resource-loading');
+        this.errorEl = previewContent?.querySelector('.resource-error');
+
+        // Don't query .resource-body - this.container IS the resource-body div
+        // URL preview elements are direct children of this.container
+        this.urlInput = this.container.querySelector('.url-input');
+        this.backBtn = this.container.querySelector('.btn-url-back');
+        this.forwardBtn = this.container.querySelector('.btn-url-forward');
+        this.refreshBtn = this.container.querySelector('.btn-url-refresh');
+        this.externalBtn = this.container.querySelector('.btn-url-external');
+        this.iframe = this.container.querySelector('.url-iframe');
+        this.blockedEl = this.container.querySelector('.url-blocked');
+        this.openExternalBtn = this.container.querySelector('.btn-open-external');
+    }
+
+    bindEvents() {
+        this.backBtn.addEventListener('click', () => {
+            if (this.iframe.contentWindow) {
+                this.iframe.contentWindow.history.back();
+            }
+        });
+
+        this.forwardBtn.addEventListener('click', () => {
+            if (this.iframe.contentWindow) {
+                this.iframe.contentWindow.history.forward();
+            }
+        });
+
+        this.refreshBtn.addEventListener('click', () => {
+            if (this.iframe.src) {
+                this.iframe.src = this.iframe.src;
+            }
+        });
+
+        this.iframe.addEventListener('load', () => {
+            this.loadingEl?.classList.add('hidden');
+        });
+
+        this.iframe.addEventListener('error', () => {
+            this.showBlocked();
+        });
+
+        this.openExternalBtn.addEventListener('click', () => {
+            if (this.url) {
+                window.open(this.url, '_blank');
+            }
+        });
+    }
+
+    async loadContent() {
+        this.showLoading();
+
+        try {
+            const source = await this.fetchSource();
+            this.url = source.url;
+
+            if (this.url) {
+                this.urlInput.value = this.url;
+                this.externalBtn.href = this.url;
+                this.openExternalBtn.href = this.url;
+
+                // Set iframe src with a timeout to detect blocking
+                this.iframe.src = this.url;
+
+                // Show content after a short delay
+                setTimeout(() => {
+                    this.showContent();
+                }, 500);
+
+                // Check if the iframe was blocked
+                setTimeout(() => {
+                    if (this.iframe.contentWindow === null) {
+                        this.showBlocked();
+                    }
+                }, 2000);
+            } else {
+                this.showError('该资源没有 URL');
+            }
+        } catch (error) {
+            this.showError('加载 URL 失败: ' + error.message);
+        }
+    }
+
+    showBlocked() {
+        this.iframe.style.display = 'none';
+        this.blockedEl.style.display = 'flex';
+        this.loadingEl?.classList.add('hidden');
     }
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,8 @@ func (s *Server) setupRoutes() {
 	{
 		auth.GET("/login/:provider", s.auth.HandleLogin)
 		auth.GET("/callback/:provider", s.auth.HandleCallback)
+		auth.GET("/test-mode", s.auth.HandleTestMode)
+		auth.POST("/test-login", s.auth.HandleTestLogin)
 	}
 
 	// File serving route - checks notebook public status internally
@@ -146,6 +149,7 @@ func (s *Server) setupRoutes() {
 
 			// Sources within a notebook
 			notebooks.GET("/:id/sources", s.handleListSources)
+			notebooks.GET("/:id/sources/:sourceId", s.handleGetSource)
 			notebooks.POST("/:id/sources", s.handleAddSource)
 			notebooks.DELETE("/:id/sources/:sourceId", s.handleDeleteSource)
 
@@ -181,6 +185,7 @@ func (s *Server) setupRoutes() {
 		public.GET("/notebooks/:token", s.handleGetPublicNotebook)
 		// Get public notebook sources
 		public.GET("/notebooks/:token/sources", s.handleListPublicSources)
+		public.GET("/notebooks/:token/sources/:sourceId", s.handleGetPublicSource)
 		// Get public notebook notes
 		public.GET("/notebooks/:token/notes", s.handleListPublicNotes)
 	}
@@ -419,6 +424,32 @@ func (s *Server) handleListSources(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, sources)
+}
+
+func (s *Server) handleGetSource(c *gin.Context) {
+	ctx := context.Background()
+	notebookID := c.Param("id")
+	sourceID := c.Param("sourceId")
+	userID := c.GetString("user_id")
+
+	if err := s.checkNotebookAccess(ctx, notebookID, userID); err != nil {
+		c.JSON(http.StatusForbidden, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	source, err := s.store.GetSource(ctx, sourceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to get source"})
+		return
+	}
+
+	// Verify the source belongs to the requested notebook
+	if source.NotebookID != notebookID {
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "Source not found in this notebook"})
+		return
+	}
+
+	c.JSON(http.StatusOK, source)
 }
 
 func (s *Server) handleAddSource(c *gin.Context) {
@@ -1106,9 +1137,16 @@ func (s *Server) handleServeFile(c *gin.Context) {
 	filename := c.Param("filename")
 	userID := c.GetString("user_id")
 
-	golog.Infof("Request for file: %s, userID: %s", filename, userID)
+	// URL decode the filename to handle Chinese characters and special characters
+	decodedFilename, err := url.QueryUnescape(filename)
+	if err != nil {
+		golog.Errorf("Failed to decode filename: %v", err)
+		decodedFilename = filename // Use original if decode fails
+	}
 
-	if filename == "" {
+	golog.Infof("Request for file: %s (decoded: %s), userID: %s", filename, decodedFilename, userID)
+
+	if decodedFilename == "" {
 		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "filename required"})
 		return
 	}
@@ -1118,8 +1156,8 @@ func (s *Server) handleServeFile(c *gin.Context) {
 	var notebookID string
 
 	// Try to find the file in sources table first (uploaded files)
-	golog.Infof("Trying to find file %s in sources table", filename)
-	source, notebook, err := s.store.GetSourceByFileName(ctx, filename)
+	golog.Infof("Trying to find file %s in sources table", decodedFilename)
+	source, notebook, err := s.store.GetSourceByFileName(ctx, decodedFilename)
 	if err == nil && source != nil && notebook != nil {
 		// File is from a source upload
 		golog.Infof("File found in sources table, source_id: %s, notebook_id: %s", source.ID, notebook.ID)
@@ -1129,7 +1167,7 @@ func (s *Server) handleServeFile(c *gin.Context) {
 	} else {
 		golog.Infof("File not in sources table (err: %v), trying notes table", err)
 		// File not in sources table - try notes table (generated files like infographics)
-		note, nb, err := s.store.GetNoteByFileName(ctx, filename)
+		note, nb, err := s.store.GetNoteByFileName(ctx, decodedFilename)
 		if err == nil && note != nil && nb != nil {
 			golog.Infof("File found in notes table, note_id: %s, notebook_id: %s, is_public: %v", note.ID, nb.ID, nb.IsPublic)
 			ownerUserID = nb.UserID
@@ -1148,7 +1186,7 @@ func (s *Server) handleServeFile(c *gin.Context) {
 	// Access control logic
 	if isPublic {
 		// Public notebook - allow access
-		golog.Debugf("Serving public file: %s from notebook: %s", filename, notebookID)
+		golog.Debugf("Serving public file: %s from notebook: %s", decodedFilename, notebookID)
 	} else {
 		// Private notebook - require authentication and ownership
 		if userID == "" {
@@ -1156,14 +1194,14 @@ func (s *Server) handleServeFile(c *gin.Context) {
 			return
 		}
 		if userID != ownerUserID {
-			golog.Warnf("Unauthorized access attempt by user %s to file %s owned by %s", userID, filename, ownerUserID)
+			golog.Warnf("Unauthorized access attempt by user %s to file %s owned by %s", userID, decodedFilename, ownerUserID)
 			c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied"})
 			return
 		}
 	}
 
 	// Build file path using the owner's user ID
-	filePath := filepath.Join("./data/uploads", ownerUserID, filename)
+	filePath := filepath.Join("./data/uploads", ownerUserID, decodedFilename)
 
 	golog.Infof("Trying to load file: %s (owner: %s, public: %v)", filePath, ownerUserID, isPublic)
 
@@ -1180,7 +1218,7 @@ func (s *Server) handleServeFile(c *gin.Context) {
 	// Verify the path is within the uploads directory
 	absUploadDir, _ := filepath.Abs("./data/uploads")
 	if !strings.HasPrefix(absPath, absUploadDir) {
-		golog.Warnf("Attempted directory traversal for file: %s", filename)
+		golog.Warnf("Attempted directory traversal for file: %s", decodedFilename)
 		c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied"})
 		return
 	}
@@ -1195,7 +1233,7 @@ func (s *Server) handleServeFile(c *gin.Context) {
 	golog.Infof("File found and serving: %s", absPath)
 
 	// Determine content type
-	ext := filepath.Ext(filename)
+	ext := filepath.Ext(decodedFilename)
 	contentType := "application/octet-stream"
 	switch ext {
 	case ".jpg", ".jpeg":
@@ -1340,6 +1378,34 @@ func (s *Server) handleListPublicSources(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, sources)
+}
+
+// handleGetPublicSource gets a single source for a public notebook
+func (s *Server) handleGetPublicSource(c *gin.Context) {
+	ctx := context.Background()
+	token := c.Param("token")
+	sourceID := c.Param("sourceId")
+
+	// First verify the notebook is public
+	notebook, err := s.store.GetNotebookByPublicToken(ctx, token)
+	if err != nil {
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "Public notebook not found"})
+		return
+	}
+
+	source, err := s.store.GetSource(ctx, sourceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to get source"})
+		return
+	}
+
+	// Verify the source belongs to the requested notebook
+	if source.NotebookID != notebook.ID {
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "Source not found in this notebook"})
+		return
+	}
+
+	c.JSON(http.StatusOK, source)
 }
 
 // handleListPublicNotes lists notes for a public notebook
