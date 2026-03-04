@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -185,6 +186,7 @@ func (s *Server) setupRoutes() {
 			// Chat within a notebook
 			notebooks.GET("/:id/chat/sessions", s.handleListChatSessions)
 			notebooks.POST("/:id/chat/sessions", s.handleCreateChatSession)
+			notebooks.GET("/:id/chat/sessions/:sessionId", s.handleGetChatSession)
 			notebooks.DELETE("/:id/chat/sessions/:sessionId", s.handleDeleteChatSession)
 			notebooks.POST("/:id/chat/sessions/:sessionId/messages", s.handleSendMessage)
 
@@ -1025,6 +1027,23 @@ func (s *Server) handleCreateChatSession(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, session)
+}
+
+func (s *Server) handleGetChatSession(c *gin.Context) {
+	ctx := context.Background()
+	sessionID := c.Param("sessionId")
+
+	session, err := s.store.GetChatSession(ctx, sessionID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, ErrorResponse{Error: "Session not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to get chat session"})
+		return
+	}
+
+	c.JSON(http.StatusOK, session)
 }
 
 func (s *Server) handleDeleteChatSession(c *gin.Context) {
