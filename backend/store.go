@@ -142,6 +142,7 @@ func (s *Store) initSchema() error {
 		id TEXT PRIMARY KEY,
 		notebook_id TEXT NOT NULL,
 		title TEXT NOT NULL,
+		summary TEXT,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL,
 		metadata TEXT,
@@ -1046,12 +1047,13 @@ func (s *Store) CreateChatSession(ctx context.Context, notebookID, title string)
 func (s *Store) GetChatSession(ctx context.Context, id string) (*ChatSession, error) {
 	var session ChatSession
 	var metadataJSON string
+	var summary sql.NullString
 	var createdAt, updatedAt int64
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, notebook_id, title, created_at, updated_at, metadata
+		SELECT id, notebook_id, title, summary, created_at, updated_at, metadata
 		FROM chat_sessions WHERE id = ?
-	`, id).Scan(&session.ID, &session.NotebookID, &session.Title, &createdAt, &updatedAt, &metadataJSON)
+	`, id).Scan(&session.ID, &session.NotebookID, &session.Title, &summary, &createdAt, &updatedAt, &metadataJSON)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("chat session not found")
 	}
@@ -1061,6 +1063,12 @@ func (s *Store) GetChatSession(ctx context.Context, id string) (*ChatSession, er
 
 	session.CreatedAt = time.Unix(createdAt, 0)
 	session.UpdatedAt = time.Unix(updatedAt, 0)
+
+	if summary.Valid {
+		session.Summary = summary.String
+	} else {
+		session.Summary = ""
+	}
 
 	if metadataJSON != "" {
 		json.Unmarshal([]byte(metadataJSON), &session.Metadata)
@@ -1080,7 +1088,7 @@ func (s *Store) GetChatSession(ctx context.Context, id string) (*ChatSession, er
 // ListChatSessions retrieves all chat sessions for a notebook
 func (s *Store) ListChatSessions(ctx context.Context, notebookID string) ([]ChatSession, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, notebook_id, title, created_at, updated_at, metadata
+		SELECT id, notebook_id, title, summary, created_at, updated_at, metadata
 		FROM chat_sessions WHERE notebook_id = ? ORDER BY updated_at DESC
 	`, notebookID)
 	if err != nil {
@@ -1092,14 +1100,21 @@ func (s *Store) ListChatSessions(ctx context.Context, notebookID string) ([]Chat
 	for rows.Next() {
 		var session ChatSession
 		var metadataJSON string
+		var summary sql.NullString
 		var createdAt, updatedAt int64
 
-		if err := rows.Scan(&session.ID, &session.NotebookID, &session.Title, &createdAt, &updatedAt, &metadataJSON); err != nil {
+		if err := rows.Scan(&session.ID, &session.NotebookID, &session.Title, &summary, &createdAt, &updatedAt, &metadataJSON); err != nil {
 			return nil, err
 		}
 
 		session.CreatedAt = time.Unix(createdAt, 0)
 		session.UpdatedAt = time.Unix(updatedAt, 0)
+
+		if summary.Valid {
+			session.Summary = summary.String
+		} else {
+			session.Summary = ""
+		}
 
 		if metadataJSON != "" {
 			json.Unmarshal([]byte(metadataJSON), &session.Metadata)
@@ -1212,6 +1227,25 @@ func (s *Store) getChatMessage(ctx context.Context, id string) (*ChatMessage, er
 // DeleteChatSession deletes a chat session
 func (s *Store) DeleteChatSession(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM chat_sessions WHERE id = ?`, id)
+	return err
+}
+
+// UpdateSessionTitle updates the title of a chat session
+func (s *Store) UpdateSessionTitle(ctx context.Context, id, title string) error {
+	now := time.Now()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?
+	`, title, now.Unix(), id)
+	return err
+}
+
+// UpdateSessionMetadata updates the metadata of a chat session
+func (s *Store) UpdateSessionMetadata(ctx context.Context, id string, metadata map[string]interface{}) error {
+	metadataJSON, _ := json.Marshal(metadata)
+	now := time.Now()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE chat_sessions SET metadata = ?, updated_at = ? WHERE id = ?
+	`, string(metadataJSON), now.Unix(), id)
 	return err
 }
 

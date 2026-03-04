@@ -90,6 +90,7 @@ type ChatSession struct {
 	NotebookID string                 `json:"notebook_id"`
 	Title      string                 `json:"title"`
 	Messages   []ChatMessage          `json:"messages"`
+	Summary    string                 `json:"summary,omitempty"`
 	CreatedAt  time.Time              `json:"created_at"`
 	UpdatedAt  time.Time              `json:"updated_at"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`
@@ -166,6 +167,12 @@ type HealthResponse struct {
 	Version   string            `json:"version"`
 	Timestamp int64             `json:"timestamp"`
 	Services  map[string]string `json:"services"`
+}
+
+// NotebookOverviewResponse represents a notebook overview with summary and questions
+type NotebookOverviewResponse struct {
+	Summary   string   `json:"summary"`
+	Questions []string `json:"questions"`
 }
 
 // ConfigResponse represents the client configuration

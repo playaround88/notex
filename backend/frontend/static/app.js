@@ -127,6 +127,7 @@ class OpenNotebook {
         this.currentNotebook = null;
         this.apiBase = '/api';
         this.currentChatSession = null;
+        this.chatSessions = []; // 存储会话列表
         this.currentPublicToken = null;
 
         // Auth state
@@ -162,6 +163,30 @@ class OpenNotebook {
             data_chart: '数据图表'
         };
 
+        // Prompt scenarios data - 预定义提示场景
+        this.promptScenarios = [
+            { icon: 'search', display_text: '总结核心观点', prompt: '总结这篇文章的核心观点' },
+            { icon: 'question', display_text: '列出3个关键问题', prompt: '列出3个关于本文的关键问题' },
+            { icon: 'lightbulb', display_text: '概念解释', prompt: '解释文中的重要概念' },
+            { icon: 'compare', display_text: '观点对比', prompt: '对比文中的不同观点' },
+            { icon: 'action', display_text: '可行建议', prompt: '给出具体可行的建议' },
+            { icon: 'detail', display_text: '深入分析', prompt: '深入分析某个具体部分' },
+            { icon: 'example', display_text: '提供更多例子', prompt: '提供更多相关例子' },
+            { icon: 'simplify', display_text: '简单解释复杂概念', prompt: '用简单的话解释复杂概念' },
+            { icon: 'extend', display_text: '话题扩展', prompt: '扩展这个话题' },
+            { icon: 'creative', display_text: '从不同角度思考', prompt: '从不同角度思考' },
+            { icon: 'expert', display_text: '专家综合器', prompt: '你是一位拥有 15 年经验的 [领域] 专家。分析这些资料，并找出该领域从业者会立即识别为突破性进展的 3 个核心见解。对于每个见解，解释它为什么重要，以及它挑战了哪些传统观念。' },
+            { icon: 'conflict', display_text: '矛盾猎人', prompt: '比较这些来源，并找出它们相互矛盾的所有点。对于每个矛盾，解释哪个来源有更强的证据以及原因。如果两者都可信，解释可能解释分歧的因素。' },
+            { icon: 'blueprint', display_text: '实施蓝图', prompt: '提取所有来源中提到的可执行步骤、工具、框架和技术。将它们组织成一个包含每个步骤的先决条件、预期结果和潜在陷阱的逐步实施计划。' },
+            { icon: 'generate', display_text: '问题生成器', prompt: '根据这些来源，生成 15 个专家会问但来源未回答的问题。优先考虑那些将推动领域发展或揭示当前理解中关键空白的问题。' },
+            { icon: 'assumption', display_text: '假设挖掘器', prompt: '识别这些来源中每一个未明确说明的假设。对于每个假设，评估其重要性（1-10）以及其错误的可能程度。解释如果该假设是错误的，情况会有何变化。' },
+            { icon: 'framework', display_text: '框架构建器', prompt: '创建一个综合框架，整合这些来源中的所有概念。包括：关键组件、组件之间的关系、应用的决策树以及框架失效的边缘情况。' },
+            { icon: 'evidence', display_text: '证据映射器', prompt: '对于这些来源中的每项主要声明，提取支持证据并评估其强度（轶事性、相关性、实验性、元分析）。标记那些证据薄弱但以高置信度陈述的声明。' },
+            { icon: 'users', display_text: '利益相关者翻译', prompt: '将这些来源的见解翻译给三个不同的受众：[高管、工程师、最终用户]。针对每个受众，关注他们特别关心的内容，并使用他们能立即理解的语言/示例。' },
+            { icon: 'timeline', display_text: '时间线构建器', prompt: '从这些来源中提取所有日期、事件、里程碑和时间参考。构建一个全面的 时间线，展示该领域/主题是如何演变的。识别进度显著加快的加速点。' },
+            { icon: 'weakness', display_text: '弱点探测器', prompt: '扮演一个严厉的同行评审员。识别这些来源中的每一个方法论缺陷、逻辑漏洞、过度主张和不支持的大跃进。对于每一个弱点，建议需要哪些补充证据来加强论点。' }
+        ];
+
         this.init();
     }
 
@@ -171,6 +196,7 @@ class OpenNotebook {
         this.bindEvents();
         this.initResizers();
         this.initNotebookNameEditor();
+        this.initPromptScenariosPanel();
 
         // 清理过期缓存
         this.cache.cleanup();
@@ -499,6 +525,11 @@ class OpenNotebook {
         });
 
         safeAddEventListener('chatForm', 'submit', (e) => this.handleChat(e));
+
+        // Chat sessions management
+        safeAddEventListener('btnSaveChatSession', 'click', () => this.saveCurrentSession());
+        safeAddEventListener('btnNewChatSession', 'click', () => this.handleNewChatSession());
+        safeAddEventListener('btnClearSessions', 'click', () => this.handleClearSessions());
 
         safeAddEventListener('modalOverlay', 'click', (e) => {
             if (e.target.id === 'modalOverlay') {
@@ -1043,21 +1074,35 @@ class OpenNotebook {
         const chatWrapper = document.querySelector('.chat-messages-wrapper');
         const noteViewContainer = document.querySelector('.note-view-container');
         const notesDetailsView = document.querySelector('.notes-details-view');
+        const sessionsPanel = document.getElementById('chatSessionsPanel');
 
         if (tab === 'note') {
             chatWrapper.style.display = 'none';
+            if (sessionsPanel) sessionsPanel.classList.add('hidden');
             if (notesDetailsView) notesDetailsView.style.display = 'none';
             if (noteViewContainer) {
                 noteViewContainer.style.display = 'flex';
             }
         } else if (tab === 'chat') {
             chatWrapper.style.display = 'flex';
+            if (sessionsPanel) sessionsPanel.classList.add('hidden');
             if (notesDetailsView) notesDetailsView.style.display = 'none';
             if (noteViewContainer) {
                 noteViewContainer.style.display = 'none';
             }
+        } else if (tab === 'sessions') {
+            // Show sessions panel, hide chat messages wrapper
+            chatWrapper.style.display = 'none';
+            if (sessionsPanel) {
+                sessionsPanel.classList.remove('hidden');
+                // Load sessions when tab is shown
+                this.loadChatSessions();
+            }
+            if (notesDetailsView) notesDetailsView.style.display = 'none';
+            if (noteViewContainer) noteViewContainer.style.display = 'none';
         } else if (tab === 'notes_list') {
             chatWrapper.style.display = 'none';
+            if (sessionsPanel) sessionsPanel.classList.add('hidden');
             if (noteViewContainer) noteViewContainer.style.display = 'none';
             if (notesDetailsView) {
                 notesDetailsView.style.display = 'flex';
@@ -1461,6 +1506,88 @@ class OpenNotebook {
 
         nameDisplay.classList.remove('hidden');
         nameEditor.classList.add('hidden');
+    }
+
+    // Initialize prompt scenarios panel
+    initPromptScenariosPanel() {
+        const header = document.querySelector('.prompt-scenarios-header');
+        if (header) {
+            header.addEventListener('click', () => this.togglePromptScenariosPanel());
+        }
+        this.renderPromptScenarios();
+    }
+
+    // Render prompt scenarios buttons
+    renderPromptScenarios() {
+        const container = document.querySelector('.prompt-scenarios-container');
+        if (!container) return;
+
+        container.innerHTML = '';
+        this.promptScenarios.forEach(scenario => {
+            const btn = document.createElement('button');
+            btn.className = 'prompt-scenario-btn';
+            btn.dataset.prompt = scenario.prompt;
+            btn.title = scenario.display_text;
+            btn.innerHTML = `
+                <span class="prompt-scenario-icon">${this.getIcon(scenario.icon)}</span>
+                <span class="prompt-scenario-text">${scenario.display_text}</span>
+            `;
+            btn.addEventListener('click', () => this.handlePromptScenarioClick(scenario.prompt));
+            container.appendChild(btn);
+        });
+    }
+
+    // Handle prompt scenario button click
+    handlePromptScenarioClick(prompt) {
+        const chatInput = document.getElementById('chatInput');
+        if (chatInput) {
+            chatInput.value = prompt;
+            chatInput.focus();
+            // 触发输入事件以便可以开始输入
+            chatInput.dispatchEvent(new Event('input'));
+        }
+    }
+
+    // Toggle prompt scenarios panel collapse/expand
+    togglePromptScenariosPanel() {
+        const panel = document.querySelector('.prompt-scenarios-panel');
+        const header = document.querySelector('.prompt-scenarios-header');
+        const icon = header.querySelector('.chevron-icon');
+
+        if (panel.classList.contains('collapsed')) {
+            panel.classList.remove('collapsed');
+            icon.classList.remove('rotated');
+        } else {
+            panel.classList.add('collapsed');
+            icon.classList.add('rotated');
+        }
+    }
+
+    // Get SVG icon by name
+    getIcon(name) {
+        const icons = {
+            search: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>`,
+            question: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg>`,
+            lightbulb: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 12 3.5a4.65 4.65 0 0 0-4.5 4.5v1.29c0 .75-.15 1.48-.5 2.11"></path></svg>`,
+            compare: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18"></rect><rect x="14" y="3" width="7" height="18"></rect><path d="M10 9h4"></path><path d="M10 15h4"></path></svg>`,
+            action: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>`,
+            detail: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path><path d="M11 8v6"></path><path d="M8 11h6"></path></svg>`,
+            example: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path><path d="M8 7h6"></path><path d="M8 11h8"></path><path d="M8 15h6"></path></svg>`,
+            simplify: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"></path><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>`,
+            extend: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>`,
+            creative: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2z"></path></svg>`,
+            expert: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`,
+            conflict: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 1 0 9 9 9 9 0 0 0-9-9Z"></path><path d="M12 12v6"></path><path d="M12 6v2"></path></svg>`,
+            blueprint: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>`,
+            generate: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M3 15h6"></path><path d="M6 12v6"></path></svg>`,
+            assumption: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>`,
+            framework: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>`,
+            evidence: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>`,
+            users: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`,
+            timeline: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path><path d="M21 18h.01"></path><path d="M21 12h.01"></path><path d="M21 6h.01"></path></svg>`,
+            weakness: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>`
+        };
+        return icons[name] || icons.search;
     }
 
     showNewNotebookModal() {
@@ -2504,22 +2631,348 @@ class OpenNotebook {
         if (!this.currentNotebook) return;
 
         try {
-            await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions`);
-            const container = document.getElementById('chatMessages');
-            container.innerHTML = `
-                <div class="chat-welcome">
-                    <svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <circle cx="20" cy="12" r="6"/>
-                        <path d="M8 38 C8 28 14 22 20 22 C26 22 32 28 32 38"/>
-                    </svg>
-                    <h3>与来源对话</h3>
-                    <p>询问关于笔记本内容的问题</p>
-                </div>
-            `;
-            this.currentChatSession = null;
+            const sessions = await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions`);
+            this.chatSessions = sessions || [];
+
+            // Update session list UI if exists
+            const sessionList = document.getElementById('chatSessionList');
+            if (sessionList) {
+                if (sessions.length === 0) {
+                    sessionList.innerHTML = '<p class="text-muted">暂无对话历史</p>';
+                } else {
+                    sessionList.innerHTML = sessions.map(session => `
+                        <div class="chat-session-item ${session.id === this.currentChatSession ? 'active' : ''}"
+                             data-session-id="${session.id}">
+                            <div class="session-content">
+                                <div class="session-title">${session.title || '新对话'}</div>
+                                <div class="session-time">${this.formatTime(session.updated_at)}</div>
+                            </div>
+                            <button class="btn-delete-session" data-session-id="${session.id}" title="删除对话">
+                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M2 4h10M5 4v8M9 4v8M3 4l1 9M11 4l-1 9"/>
+                                </svg>
+                            </button>
+                        </div>
+                    `).join('');
+
+                    // Add click handlers for session switching
+                    sessionList.querySelectorAll('.chat-session-item').forEach(item => {
+                        const sessionId = item.dataset.sessionId;
+                        item.addEventListener('click', (e) => {
+                            // Don't switch session if delete button was clicked
+                            if (e.target.closest('.btn-delete-session')) return;
+                            this.switchChatSession(sessionId);
+                        });
+
+                        // Add delete handler
+                        const deleteBtn = item.querySelector('.btn-delete-session');
+                        if (deleteBtn) {
+                            deleteBtn.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                this.handleDeleteSession(sessionId);
+                            });
+                        }
+                    });
+                }
+            }
+
+            // Only reset chat messages view if no current session
+            if (!this.currentChatSession) {
+                await this.loadNotebookOverview();
+            }
         } catch (error) {
             console.error('加载对话失败:', error);
         }
+    }
+
+    // Handle new chat session
+    async handleNewChatSession() {
+        if (!this.currentNotebook) {
+            this.showError('请先选择一个笔记本');
+            return;
+        }
+
+        // Check if there's a current session with messages to save
+        if (this.currentChatSession) {
+            const chatMessages = document.getElementById('chatMessages');
+            const messages = chatMessages.querySelectorAll('.chat-message');
+            if (messages.length > 0) {
+                // Session has messages, it's already saved
+                this.currentChatSession = null;
+                this.switchPanelTab('chat');
+                this.showWelcomeMessage();
+                this.setStatus('已开始新对话');
+                return;
+            }
+        }
+
+        // If there's no current session, just clear and show welcome
+        this.currentChatSession = null;
+        this.switchPanelTab('chat');
+        this.showWelcomeMessage();
+        this.setStatus('已开始新对话');
+    }
+
+    // Show welcome message
+    showWelcomeMessage() {
+        const container = document.getElementById('chatMessages');
+        container.innerHTML = `
+            <div class="chat-welcome">
+                <svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="20" cy="12" r="6"/>
+                    <path d="M8 38 C8 28 14 22 20 22 C26 22 32 28 32 38"/>
+                </svg>
+                <h3>与来源对话</h3>
+                <p>询问关于笔记本内容的问题</p>
+            </div>
+        `;
+    }
+
+    // Save current session
+    async saveCurrentSession() {
+        if (!this.currentNotebook) {
+            this.showError('请先选择一个笔记本');
+            return;
+        }
+
+        // If there's no current session (new conversation), no need to save
+        if (!this.currentChatSession) {
+            this.setStatus('当前是新会话，无需保存');
+            return;
+        }
+
+        // Session is already saved (exists in database)
+        this.setStatus('会话已保存');
+    }
+
+    // Switch to a chat session
+    switchChatSession(sessionId) {
+        this.currentChatSession = sessionId;
+        // Switch to chat tab
+        this.switchPanelTab('chat');
+        // Reload messages for this session
+        this.loadChatMessages(sessionId);
+        // Update active state in UI
+        document.querySelectorAll('.chat-session-item').forEach(item => {
+            item.classList.toggle('active', item.dataset.sessionId === sessionId);
+        });
+    }
+
+    // Load chat messages for a session
+    async loadChatMessages(sessionId) {
+        if (!this.currentNotebook || !sessionId) return;
+
+        try {
+            const session = await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions/${sessionId}`);
+            const container = document.getElementById('chatMessages');
+            container.innerHTML = ''; // Clear welcome/overview
+
+            // Display all messages
+            if (session.messages && session.messages.length > 0) {
+                session.messages.forEach(msg => {
+                    const sources = msg.sources || [];
+                    this.addMessage(msg.role, msg.content, sources, false);
+                });
+            }
+
+            // Scroll to bottom
+            container.scrollTop = container.scrollHeight;
+        } catch (error) {
+            console.error('加载对话消息失败:', error);
+            this.showError('加载对话消息失败');
+        }
+    }
+
+    // Handle delete session
+    async handleDeleteSession(sessionId) {
+        if (!this.currentNotebook) {
+            this.showError('请先选择一个笔记本');
+            return;
+        }
+
+        if (!confirm('确定要删除这个对话吗？')) {
+            return;
+        }
+
+        try {
+            await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions/${sessionId}`, {
+                method: 'DELETE'
+            });
+
+            // If deleting current session, clear it
+            if (this.currentChatSession === sessionId) {
+                this.currentChatSession = null;
+                await this.loadNotebookOverview();
+            }
+
+            // Refresh session list
+            this.loadChatSessions();
+            this.setStatus('对话已删除');
+        } catch (error) {
+            console.error('Failed to delete session:', error);
+            this.showError(`删除失败: ${error.message}`);
+        }
+    }
+
+    // Handle clear all sessions
+    async handleClearSessions() {
+        if (!this.currentNotebook) {
+            this.showError('请先选择一个笔记本');
+            return;
+        }
+
+        const sessions = this.chatSessions || [];
+        if (sessions.length === 0) {
+            this.showError('暂无对话历史');
+            return;
+        }
+
+        if (!confirm(`确定要清空所有对话历史吗？这将删除 ${sessions.length} 个对话。`)) {
+            return;
+        }
+
+        try {
+            await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions`, {
+                method: 'DELETE'
+            });
+
+            // Clear current session
+            this.currentChatSession = null;
+            await this.loadNotebookOverview();
+
+            // Refresh session list
+            this.loadChatSessions();
+            this.setStatus('对话历史已清空');
+        } catch (error) {
+            console.error('Failed to clear sessions:', error);
+            this.showError(`清空失败: ${error.message}`);
+        }
+    }
+
+    // Format time for display
+    formatTime(timestamp) {
+        if (!timestamp) return '';
+
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diff = now - date;
+
+        // Less than 1 minute
+        if (diff < 60000) {
+            return '刚刚';
+        }
+
+        // Less than 1 hour
+        if (diff < 3600000) {
+            return `${Math.floor(diff / 60000)}分钟前`;
+        }
+
+        // Less than 1 day
+        if (diff < 86400000) {
+            return `${Math.floor(diff / 3600000)}小时前`;
+        }
+
+        // Less than 7 days
+        if (diff < 604800000) {
+            return `${Math.floor(diff / 86400000)}天前`;
+        }
+
+        // Otherwise show date
+        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        const day = date.getDate().toString().padStart(2, '0');
+        return `${month}-${day}`;
+    }
+
+    async loadNotebookOverview() {
+        if (!this.currentNotebook) return;
+
+        // Only show welcome message when there's no current session
+        // Overview should only be shown when there's an active session with summary
+        if (!this.currentChatSession) {
+            this.showWelcomeMessage();
+            return;
+        }
+
+        // If there's a current session, try to load the session's summary from metadata
+        try {
+            const session = await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions/${this.currentChatSession}`);
+            if (session.metadata && session.metadata.summary) {
+                // Show session summary if available
+                this.displayOverview({
+                    summary: session.metadata.summary,
+                    questions: []
+                });
+            } else {
+                this.showWelcomeMessage();
+            }
+        } catch (error) {
+            console.error('加载会话摘要失败:', error);
+            this.showWelcomeMessage();
+        }
+    }
+
+    displayOverview(overview) {
+        const container = document.getElementById('chatMessages');
+        container.innerHTML = '';
+
+        // 创建概览卡片
+        const overviewCard = document.createElement('div');
+        overviewCard.className = 'chat-overview';
+
+        // 摘要部分
+        if (overview.summary && overview.summary.trim()) {
+            const summaryDiv = document.createElement('div');
+            summaryDiv.className = 'overview-summary';
+            summaryDiv.innerHTML = `
+                <div class="overview-header">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg>
+                    <span>笔记本概览</span>
+                </div>
+                <div class="overview-content">${overview.summary}</div>
+            `;
+            overviewCard.appendChild(summaryDiv);
+        }
+
+        // 问题部分
+        if (overview.questions && overview.questions.length > 0) {
+            const questionsDiv = document.createElement('div');
+            questionsDiv.className = 'overview-questions';
+            questionsDiv.innerHTML = `
+                <div class="overview-header">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                        <path d="M12 17h.01"></path>
+                    </svg>
+                    <span>探索问题</span>
+                </div>
+            `;
+
+            const questionsList = document.createElement('ul');
+            overview.questions.forEach((question, index) => {
+                const li = document.createElement('li');
+                li.className = 'overview-question';
+                li.textContent = `${index + 1}. ${question}`;
+                li.addEventListener('click', () => {
+                    const input = document.getElementById('chatInput');
+                    input.value = question;
+                    input.focus();
+                });
+                questionsList.appendChild(li);
+            });
+
+            questionsDiv.appendChild(questionsList);
+            overviewCard.appendChild(questionsDiv);
+        }
+
+        container.appendChild(overviewCard);
+        this.currentChatSession = null;
     }
 
     async handleChat(e) {
@@ -2555,7 +3008,7 @@ class OpenNotebook {
                 }),
             });
 
-            this.addMessage('assistant', response.message, response.sources);
+            this.addMessage('assistant', response.message, response.sources, response.metadata);
             this.currentChatSession = response.session_id;
             this.setStatus('就绪');
         } catch (error) {
@@ -2564,7 +3017,7 @@ class OpenNotebook {
         }
     }
 
-    addMessage(role, content, sources = []) {
+    addMessage(role, content, sources = [], metadata = null) {
         const container = document.getElementById('chatMessages');
         const template = document.getElementById('messageTemplate');
 
@@ -2575,7 +3028,7 @@ class OpenNotebook {
         const message = clone.querySelector('.chat-message');
 
         message.dataset.role = role;
-        
+
         const avatar = message.querySelector('.message-avatar');
         avatar.textContent = role === 'assistant' ? 'AI' : '你';
 
@@ -2584,6 +3037,26 @@ class OpenNotebook {
             messageText.innerHTML = marked.parse(content);
         } else {
             messageText.textContent = content;
+        }
+
+        // Display conversation summary if available
+        if (metadata && metadata.conversation_summary && metadata.conversation_summary.trim()) {
+            const summaryDiv = document.createElement('div');
+            summaryDiv.className = 'conversation-summary';
+            summaryDiv.innerHTML = `
+                <div class="summary-header">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg>
+                    <span>对话摘要</span>
+                </div>
+                <div class="summary-content">${metadata.conversation_summary}</div>
+            `;
+            container.appendChild(summaryDiv);
         }
 
         if (sources.length > 0) {

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.cn">
     <link rel="preconnect" href="https://fonts.gstatic.cn" crossorigin>
     <link href="https://fonts.googleapis.cn/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css?v=10">
+    <link rel="stylesheet" href="/static/style.css?v=24">
     <script src="https://s4.zstatic.net/ajax/libs/marked/16.3.0/lib/marked.umd.min.js"></script>
     <script src="https://s4.zstatic.net/ajax/libs/mermaid/11.4.0/mermaid.min.js"></script>
     <script src="https://s4.zstatic.net/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
@@ -201,7 +201,7 @@
                 <section class="panel panel-center">
                     <div class="panel-header">
                         <div class="panel-tabs" id="centerPanelTabs">
-                            <button class="tab-btn" data-tab="chat">对话</button>
+                            <button class="tab-btn active" data-tab="chat">对话</button>
                             <button class="tab-btn" data-tab="note" id="tabBtnNote">
                                 笔记
                                 <span class="tab-close" id="btnCloseNote">×</span>
@@ -209,11 +209,57 @@
                             <button class="tab-btn hidden" data-tab="notes_list" id="tabBtnNotesList">
                                 笔记列表
                             </button>
+                            <button class="tab-btn" data-tab="sessions" id="tabBtnSessions">
+                                会话历史
+                            </button>
+                        </div>
+                        <div class="panel-header-actions">
+                            <button class="btn-icon" id="btnSaveChatSession" title="保存会话">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M8 2L3 7l5 5 5-5"/>
+                                </svg>
+                            </button>
+                            <button class="btn-icon" id="btnNewChatSession" title="新建对话">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                                    <line x1="8" y1="2" x2="8" y2="14"/>
+                                    <line x1="2" y1="8" x2="14" y2="8"/>
+                                </svg>
+                            </button>
                         </div>
                     </div>
                     <div class="chat-messages-wrapper">
                         <div class="chat-messages" id="chatMessages">
                             <!-- Chat messages -->
+                        </div>
+                        <!-- Chat Sessions Panel (as tab content) -->
+                        <div class="chat-sessions-panel hidden" id="chatSessionsPanel">
+                            <div class="sessions-header">
+                                <div class="sessions-header-left">
+                                    <h3>对话历史</h3>
+                                    <p class="sessions-subtitle">选择一个对话继续交流</p>
+                                </div>
+                                <button class="btn-clear-sessions" id="btnClearSessions" title="清空历史">
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M3 6h10M8 6v7M5 6l-2 6M11 6l2 6"/>
+                                    </svg>
+                                    清空
+                                </button>
+                            </div>
+                            <div class="sessions-list" id="chatSessionList">
+                                <!-- Sessions will be rendered here -->
+                            </div>
+                        </div>
+                        <!-- Prompt Scenarios Panel -->
+                        <div class="prompt-scenarios-panel collapsed">
+                            <div class="prompt-scenarios-header">
+                                <span class="prompt-scenarios-title">快捷场景</span>
+                                <svg class="chevron-icon rotated" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="6 9 12 15 18 9"></polyline>
+                                </svg>
+                            </div>
+                            <div class="prompt-scenarios-container">
+                                <!-- Prompt scenario buttons will be rendered here -->
+                            </div>
                         </div>
                         <div class="chat-input-wrapper">
                             <form class="chat-form" id="chatForm">
@@ -887,6 +933,6 @@
         </div>
     </template>
 
-    <script src="/static/app.js?v=19"></script>
+    <script src="/static/app.js?v=24"></script>
 </body>
 </html>

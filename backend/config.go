@@ -49,6 +49,7 @@ type Config struct {
 	MaxContextLength int
 	ChunkSize        int
 	ChunkOverlap     int
+	MaxChatHistory   int
 
 	// Podcast generation
 	EnablePodcast bool
@@ -128,6 +129,7 @@ func LoadConfig() Config {
 		MaxContextLength:             getEnvInt("MAX_CONTEXT_LENGTH", 128000),
 		ChunkSize:                    getEnvInt("CHUNK_SIZE", 1000),
 		ChunkOverlap:                 getEnvInt("CHUNK_OVERLAP", 200),
+		MaxChatHistory:               getEnvInt("MAX_CHAT_HISTORY", 20),
 		EnablePodcast:                getEnvBool("ENABLE_PODCAST", true),
 		PodcastVoice:                 getEnv("PODCAST_VOICE", "alloy"),
 		EnableMarkitdown:             getEnvBool("ENABLE_MARKITDOWN", true),

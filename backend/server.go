@@ -32,6 +32,7 @@ type Server struct {
 	// Track which notebooks have been loaded into vector store
 	loadedNotebooks map[string]bool
 	vectorMutex     sync.RWMutex
+	memoryManager *MemoryManager
 }
 
 // NewServer creates a new server
@@ -60,6 +61,22 @@ func NewServer(cfg Config) (*Server, error) {
 	// Initialize auth handler
 	authHandler := NewAuthHandler(cfg, baseStore)
 
+	// Initialize memory manager (optional - requires LLM for summary generation)
+	var memoryManager *MemoryManager
+	if cfg.OpenAIAPIKey != "" || cfg.OllamaBaseURL != "" {
+		// MemoryManager needs an LLM for summary generation
+		llmProvider := agent.GetLLM()
+		if llmProvider != nil {
+			memoryManager = NewMemoryManager(baseStore, llmProvider, cfg.MaxChatHistory)
+			agent.SetMemoryManager(memoryManager)
+			golog.Infof("✅ memory manager initialized (max history: %d)", cfg.MaxChatHistory)
+		} else {
+			golog.Warn("⚠️  LLM provider not available, memory manager disabled")
+		}
+	} else {
+		golog.Warn("⚠️  No LLM API key configured, memory manager disabled")
+	}
+
 	// Create Gin router
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -76,6 +93,7 @@ func NewServer(cfg Config) (*Server, error) {
 		http:            router,
 		auth:            authHandler,
 		loadedNotebooks: make(map[string]bool),
+		memoryManager:   memoryManager,
 	}
 
 	// 延迟加载向量索引，不在启动时加载
@@ -172,6 +190,7 @@ func (s *Server) setupRoutes() {
 
 			// Quick chat (auto-create session)
 			notebooks.POST("/:id/chat", s.handleChat)
+			notebooks.GET("/:id/overview", s.handleNotebookOverview)
 		}
 
 		// Upload endpoint
@@ -1051,7 +1070,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 	}
 
 	// Generate response
-	response, err := s.agent.Chat(ctx, notebookID, req.Message, session.Messages)
+	response, err := s.agent.Chat(ctx, s.store.Store, notebookID, sessionID, req.Message, session.Messages)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Chat failed: %v", err)})
 		return
@@ -1097,15 +1116,55 @@ func (s *Server) handleChat(c *gin.Context) {
 		sessionID = session.ID
 	}
 
-	// Get session history
-	session, err := s.store.GetChatSession(ctx, sessionID)
+	// Check if this is the first message (to generate title)
+	session, sessionErr := s.store.GetChatSession(ctx, sessionID)
+	isFirstMessage := sessionErr == nil && len(session.Messages) == 0
+
+	// Add user message first
+	_, err := s.store.AddChatMessage(ctx, sessionID, "user", req.Message, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to get session"})
-		return
+		golog.Errorf("Failed to add user message: %v", err)
+		// Continue anyway - we can still generate a response
 	}
 
-	// Generate response
-	response, err := s.agent.Chat(ctx, notebookID, req.Message, session.Messages)
+	// Generate title for new sessions (when this is the first message)
+	if isFirstMessage && s.memoryManager != nil {
+		title, titleErr := s.memoryManager.GenerateTitle(ctx, req.Message)
+		if titleErr != nil {
+			golog.Warnf("Failed to generate title: %v", titleErr)
+		} else {
+			if updateErr := s.store.UpdateSessionTitle(ctx, sessionID, title); updateErr != nil {
+				golog.Warnf("Failed to update session title: %v", updateErr)
+			}
+		}
+	}
+
+	// Get relevant conversation history using MemoryManager
+	var relevantHistory []ChatMessage
+	var conversationSummary string
+	var historyErr error
+	if s.memoryManager != nil {
+		relevantHistory, conversationSummary, historyErr = s.memoryManager.GetConversationHistory(ctx, sessionID, req.Message)
+		if historyErr != nil {
+			golog.Warnf("Failed to get conversation history from memory manager: %v, falling back to all history", historyErr)
+			// Fallback to all history
+			session, fallbackErr := s.store.GetChatSession(ctx, sessionID)
+			if fallbackErr == nil {
+				relevantHistory = session.Messages
+			}
+		}
+	} else {
+		// Fallback to all history if memory manager not available
+		session, historyErr := s.store.GetChatSession(ctx, sessionID)
+		if historyErr != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to get session"})
+			return
+		}
+		relevantHistory = session.Messages
+	}
+
+	// Generate response with store and sessionID
+	response, err := s.agent.Chat(ctx, s.store.Store, notebookID, sessionID, req.Message, relevantHistory)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Chat failed: %v", err)})
 		return
@@ -1113,15 +1172,71 @@ func (s *Server) handleChat(c *gin.Context) {
 
 	response.SessionID = sessionID
 
-	// Add messages
+	// Add conversation summary to response metadata if available
+	if conversationSummary != "" {
+		if response.Metadata == nil {
+			response.Metadata = make(map[string]interface{})
+		}
+		response.Metadata["conversation_summary"] = conversationSummary
+	}
+
+	// Add assistant message
 	sourceIDs := make([]string, len(response.Sources))
 	for i, src := range response.Sources {
 		sourceIDs[i] = src.ID
 	}
-	s.store.AddChatMessage(ctx, sessionID, "user", req.Message, nil)
-	s.store.AddChatMessage(ctx, sessionID, "assistant", response.Message, sourceIDs)
+	_, err = s.store.AddChatMessage(ctx, sessionID, "assistant", response.Message, sourceIDs)
+	if err != nil {
+		golog.Errorf("Failed to add assistant message: %v", err)
+		// Continue anyway - the response is still sent to the user
+	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// handleNotebookOverview generates a notebook summary and 3 deep questions
+func (s *Server) handleNotebookOverview(c *gin.Context) {
+	ctx := context.Background()
+	notebookID := c.Param("id")
+
+	// 按需加载向量索引
+	if err := s.loadNotebookVectorIndex(ctx, notebookID); err != nil {
+		golog.Errorf("failed to load vector index: %v", err)
+	}
+
+	// Get all sources for the notebook
+	sources, err := s.store.ListSources(ctx, notebookID)
+	if err != nil {
+		golog.Errorf("Failed to list sources for notebook %s: %v", notebookID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to get sources"})
+		return
+	}
+
+	if len(sources) == 0 {
+		c.JSON(http.StatusOK, NotebookOverviewResponse{
+			Summary:   "请先为笔记本添加一些来源。",
+			Questions: []string{},
+		})
+		return
+	}
+
+	// Load sources with content from database (for sources that have content)
+	for i := range sources {
+		src, err := s.store.GetSource(ctx, sources[i].ID)
+		if err == nil && src != nil {
+			sources[i].Content = src.Content
+		}
+	}
+
+	// Generate overview using agent
+	overview, err := s.agent.GenerateNotebookOverview(ctx, sources)
+	if err != nil {
+		golog.Errorf("Failed to generate overview for notebook %s: %v", notebookID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to generate overview: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, overview)
 }
 
 // Utility functions

@@ -2,12 +2,14 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kataras/golog"
 	"github.com/tmc/langchaingo/llms"
 	ollamallm "github.com/tmc/langchaingo/llms/ollama"
@@ -17,10 +19,21 @@ import (
 
 // Agent handles AI operations for generating notes and chat responses
 type Agent struct {
-	vectorStore *VectorStore
-	llm         llms.Model
-	cfg         Config
-	provider    LLMProvider
+	vectorStore   *VectorStore
+	llm           llms.Model
+	cfg           Config
+	provider      LLMProvider
+	memoryManager *MemoryManager
+}
+
+// GetLLM returns the LLM model used by this agent
+func (a *Agent) GetLLM() llms.Model {
+	return a.llm
+}
+
+// SetMemoryManager sets the memory manager for this agent
+func (a *Agent) SetMemoryManager(mm *MemoryManager) {
+	a.memoryManager = mm
 }
 
 // NewAgent creates a new agent
@@ -179,11 +192,48 @@ func (a *Agent) GenerateTransformation(ctx context.Context, req *TransformationR
 }
 
 // Chat performs a chat query with RAG
-func (a *Agent) Chat(ctx context.Context, notebookID, message string, history []ChatMessage) (*ChatResponse, error) {
+func (a *Agent) Chat(ctx context.Context, store *Store, notebookID, sessionID, message string, history []ChatMessage) (*ChatResponse, error) {
+	// Generate a unique message ID for this response
+	messageID := uuid.New().String()
+
 	// Perform similarity search to find relevant sources
 	docs, err := a.vectorStore.SimilaritySearch(ctx, notebookID, message, a.cfg.MaxSources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search documents: %w", err)
+	}
+
+	// Extract unique source IDs and names from documents
+	sourceIDs := make([]string, 0)
+	sourceIDMap := make(map[string]bool)
+	sourceNameMap := make(map[string]string)
+	for _, doc := range docs {
+		if sourceID, ok := doc.Metadata["source_id"].(string); ok && sourceID != "" {
+			if !sourceIDMap[sourceID] {
+				sourceIDMap[sourceID] = true
+				sourceIDs = append(sourceIDs, sourceID)
+			}
+		}
+		// Also collect source names for backward compatibility with old documents
+		if sourceName, ok := doc.Metadata["source_name"].(string); ok {
+			sourceNameMap[sourceName] = sourceName
+		}
+		// For even older documents that use "source" key
+		if sourceName, ok := doc.Metadata["source"].(string); ok {
+			sourceNameMap[sourceName] = sourceName
+		}
+	}
+
+	// Fetch full source objects from database
+	sourcesMap := make(map[string]*Source)
+	if len(sourceIDs) > 0 && store != nil {
+		for _, sourceID := range sourceIDs {
+			source, err := store.GetSource(ctx, sourceID)
+			if err == nil && source != nil {
+				sourcesMap[sourceID] = source
+			} else if err != nil {
+				golog.Warnf("[Agent.Chat] Failed to get source %s: %v", sourceID, err)
+			}
+		}
 	}
 
 	// Build context from retrieved documents
@@ -192,16 +242,23 @@ func (a *Agent) Chat(ctx context.Context, notebookID, message string, history []
 		contextBuilder.WriteString("来源中的相关信息：\n\n")
 		for i, doc := range docs {
 			contextBuilder.WriteString(fmt.Sprintf("[来源 %d] %s\n", i+1, doc.PageContent))
-			if source, ok := doc.Metadata["source"].(string); ok {
-				contextBuilder.WriteString(fmt.Sprintf("来源: %s\n\n", source))
+			// Use source_name from metadata for context display
+			if sourceName, ok := doc.Metadata["source_name"].(string); ok {
+				contextBuilder.WriteString(fmt.Sprintf("来源: %s\n\n", sourceName))
+			} else if sourceName, ok := doc.Metadata["source"].(string); ok {
+				contextBuilder.WriteString(fmt.Sprintf("来源: %s\n\n", sourceName))
 			}
 		}
 	}
 
-	// Build chat history
+	// Build chat history (limit to configurable number of messages)
+	maxHistory := a.cfg.MaxChatHistory
+	if maxHistory <= 0 {
+		maxHistory = 20
+	}
 	var historyBuilder strings.Builder
 	for i, msg := range history {
-		if i >= 10 { // Limit history
+		if i >= maxHistory {
 			break
 		}
 		role := "用户"
@@ -211,14 +268,26 @@ func (a *Agent) Chat(ctx context.Context, notebookID, message string, history []
 		historyBuilder.WriteString(fmt.Sprintf("%s: %s\n", role, msg.Content))
 	}
 
-	// Create RAG prompt using f-string format
+	// Get conversation summary if available (from session metadata via memory manager)
+	var summary string
+	if a.memoryManager != nil && sessionID != "" && store != nil {
+		session, err := store.GetChatSession(ctx, sessionID)
+		if err == nil && session.Metadata != nil {
+			if s, ok := session.Metadata["summary"].(string); ok {
+				summary = s
+			}
+		}
+	}
+
+	// Create RAG prompt using Go template format
 	promptTemplate := prompts.NewPromptTemplate(
 		chatSystemPrompt(),
-		[]string{"history", "context", "question"},
+		[]string{"summary", "history", "context", "question"},
 	)
-	promptTemplate.TemplateFormat = prompts.TemplateFormatFString
+	promptTemplate.TemplateFormat = prompts.TemplateFormatGoTemplate
 
 	promptValue, err := promptTemplate.Format(map[string]any{
+		"summary":  summary,
 		"history":  historyBuilder.String(),
 		"context":  contextBuilder.String(),
 		"question": message,
@@ -228,27 +297,40 @@ func (a *Agent) Chat(ctx context.Context, notebookID, message string, history []
 	}
 
 	// Generate response
-	ctx, cancel := context.WithTimeout(ctx, 300*time.Second)
+	responseCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
 
-	response, err := a.provider.GenerateFromSinglePrompt(ctx, a.llm, promptValue)
+	response, err := a.provider.GenerateFromSinglePrompt(responseCtx, a.llm, promptValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate response: %w", err)
 	}
 
-	// Build source summaries
-	sourceSummaries := make([]SourceSummary, 0, len(docs))
-	sourceMap := make(map[string]bool)
-	for _, doc := range docs {
-		if source, ok := doc.Metadata["source"].(string); ok {
-			if !sourceMap[source] {
-				sourceSummaries = append(sourceSummaries, SourceSummary{
-					ID:   source,
-					Name: source,
-					Type: "file",
-				})
-				sourceMap[source] = true
-			}
+	// Build source summaries - prefer database sources, fall back to source names
+	sourceSummaries := make([]SourceSummary, 0)
+	seenSources := make(map[string]bool)
+
+	// First add sources from database lookup
+	for sourceID := range sourceIDMap {
+		if source, exists := sourcesMap[sourceID]; exists && !seenSources[sourceID] {
+			sourceSummaries = append(sourceSummaries, SourceSummary{
+				ID:   source.ID,
+				Name: source.Name,
+				Type: source.Type,
+			})
+			seenSources[sourceID] = true
+			seenSources[source.Name] = true
+		}
+	}
+
+	// For backward compatibility, add any source names that weren't found in database
+	for sourceName := range sourceNameMap {
+		if !seenSources[sourceName] {
+			sourceSummaries = append(sourceSummaries, SourceSummary{
+				ID:   sourceName,
+				Name: sourceName,
+				Type: "file",
+			})
+			seenSources[sourceName] = true
 		}
 	}
 
@@ -256,6 +338,7 @@ func (a *Agent) Chat(ctx context.Context, notebookID, message string, history []
 		Message:   response,
 		Sources:   sourceSummaries,
 		SessionID: notebookID,
+		MessageID: messageID,
 		Metadata: map[string]interface{}{
 			"docs_retrieved": len(docs),
 		},
@@ -412,6 +495,90 @@ func (a *Agent) GenerateSummary(ctx context.Context, sources []Source, length st
 	}
 
 	return resp.Content, nil
+}
+
+// GenerateNotebookOverview generates a summary and 3 deep questions from all sources
+func (a *Agent) GenerateNotebookOverview(ctx context.Context, sources []Source) (*NotebookOverviewResponse, error) {
+	golog.Infof("[GenerateNotebookOverview] Start - sourceCount: %d", len(sources))
+
+	// Build context from sources
+	var sourceContext strings.Builder
+	for i, src := range sources {
+		sourceContext.WriteString(fmt.Sprintf("\n## Source %d: %s\n", i+1, src.Name))
+
+		// Use MaxContextLength from config, or default to a safe large value
+		limit := a.cfg.MaxContextLength
+		if limit <= 0 {
+			limit = 100000
+		}
+
+		if src.Content != "" {
+			if len(src.Content) <= limit {
+				sourceContext.WriteString(src.Content)
+			} else {
+				sourceContext.WriteString(src.Content[:limit])
+				sourceContext.WriteString(fmt.Sprintf("\n... [Content truncated, total length: %d]", len(src.Content)))
+			}
+		} else {
+			sourceContext.WriteString(fmt.Sprintf("[Source content: %s, type: %s]", src.Name, src.Type))
+		}
+		sourceContext.WriteString("\n")
+	}
+
+	// Build prompt
+	promptTemplate := prompts.NewPromptTemplate(
+		notebookOverviewPrompt(),
+		[]string{"sources"},
+	)
+	promptTemplate.TemplateFormat = prompts.TemplateFormatGoTemplate
+
+	promptValue, err := promptTemplate.Format(map[string]any{
+		"sources": sourceContext.String(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to format prompt: %w", err)
+	}
+
+	// Generate response
+	responseCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
+	defer cancel()
+
+	response, err := a.provider.GenerateFromSinglePrompt(responseCtx, a.llm, promptValue)
+	if err != nil {
+		golog.Errorf("[GenerateNotebookOverview] Failed - error: %v", err)
+		return nil, fmt.Errorf("failed to generate overview: %w", err)
+	}
+
+	// Clean response: remove markdown code blocks if present
+	cleanedResponse := response
+	if strings.Contains(cleanedResponse, "```") {
+		// Find content between code blocks
+		codeBlockStart := strings.Index(cleanedResponse, "```")
+		if codeBlockStart != -1 {
+			// Skip the ``` and any language identifier
+			afterStart := cleanedResponse[codeBlockStart+3:]
+			lineEnd := strings.Index(afterStart, "\n")
+			if lineEnd != -1 {
+				cleanedResponse = afterStart[lineEnd+1:]
+			}
+			// Find the closing ```
+			codeBlockEnd := strings.LastIndex(cleanedResponse, "```")
+			if codeBlockEnd != -1 {
+				cleanedResponse = strings.TrimSpace(cleanedResponse[:codeBlockEnd])
+			}
+		}
+	}
+
+	// Parse JSON response
+	var result NotebookOverviewResponse
+	if err := json.Unmarshal([]byte(cleanedResponse), &result); err != nil {
+		golog.Errorf("[GenerateNotebookOverview] Failed to parse JSON: %v, cleaned response: %s", err, cleanedResponse)
+		return nil, fmt.Errorf("failed to parse overview response: %w", err)
+	}
+
+	golog.Infof("[GenerateNotebookOverview] Success - summaryLength: %d, questionCount: %d",
+		len(result.Summary), len(result.Questions))
+	return &result, nil
 }
 
 // callDeepInsight executes the DeepInsight CLI tool and returns the generated report
