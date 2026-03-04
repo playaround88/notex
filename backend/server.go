@@ -65,6 +65,9 @@ func NewServer(cfg Config) (*Server, error) {
 	router := gin.New()
 	router.Use(gin.Recovery(), gin.Logger())
 
+	// Set max upload size for multipart forms
+	router.MaxMultipartMemory = cfg.MaxUploadSize
+
 	s := &Server{
 		cfg:             cfg,
 		vectorStore:     vectorStore,

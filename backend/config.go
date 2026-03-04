@@ -13,6 +13,7 @@ type Config struct {
 	// Server settings
 	ServerHost string
 	ServerPort string
+	MaxUploadSize int64 // Maximum upload file size in bytes (default: 100MB)
 
 	// LLM settings
 	OpenAIAPIKey   string
@@ -101,6 +102,7 @@ func LoadConfig() Config {
 	cfg := Config{
 		ServerHost:                   getEnv("SERVER_HOST", "0.0.0.0"),
 		ServerPort:                   getEnv("SERVER_PORT", "8080"),
+		MaxUploadSize:                getEnvInt64("MAX_UPLOAD_SIZE", 200*1024*1024), // 200MB default
 		OpenAIAPIKey:                 getEnv("OPENAI_API_KEY", ""),
 		OpenAIBaseURL:                getEnv("OPENAI_BASE_URL", ""),
 		OpenAIModel:                  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -205,6 +207,16 @@ func getEnv(key, defaultValue string) string {
 func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if intVal, err := strconv.Atoi(value); err == nil {
+			return intVal
+		}
+	}
+	return defaultValue
+}
+
+// getEnvInt64 gets an environment variable as an int64 or returns a default value
+func getEnvInt64(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if intVal, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return intVal
 		}
 	}
