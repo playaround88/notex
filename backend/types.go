@@ -7,6 +7,7 @@ import (
 // User represents a registered user
 type User struct {
 	ID        string    `json:"id"`
+	HashID    string    `json:"hash_id"` // Base62 encoded user ID for public API access
 	Email     string    `json:"email"`
 	Name      string    `json:"name"`
 	AvatarURL string    `json:"avatar_url"`

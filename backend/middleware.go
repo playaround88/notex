@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -296,4 +297,44 @@ func LogUserActivity(action, userID, resourceType, resourceID, resourceName, det
 	msg := fmt.Sprintf("[USER_ACTIVITY] action=%s user_id=%s resource_type=%s resource_id=%s resource_name=%q details=%q ip=%s user_agent=%q",
 		action, userID, resourceType, resourceID, resourceName, details, ipAddress, userAgent)
 	auditLogger.Info(msg)
+}
+
+// HashIDAuthMiddleware authenticates requests using user hash_id
+// The hash_id should be provided as a query parameter or header
+func HashIDAuthMiddleware(store interface{ GetUserByHashID(context.Context, string) (*User, error) }) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Try hash_id query parameter first
+		hashID := c.Query("hash_id")
+
+		// Try X-Hash-ID header as fallback
+		if hashID == "" {
+			hashID = c.GetHeader("X-Hash-ID")
+		}
+
+		if hashID == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "hash_id parameter or X-Hash-ID header required"})
+			return
+		}
+
+		// Validate hash_id format (base62, expected length 8-16)
+		if len(hashID) < 8 || len(hashID) > 16 {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid hash_id format"})
+			return
+		}
+
+		// Look up user by hash_id
+		user, err := store.GetUserByHashID(c.Request.Context(), hashID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid hash_id"})
+			return
+		}
+
+		// Set user_id and hash_id in context
+		c.Set("user_id", user.ID)
+		c.Set("hash_id", hashID)
+
+		auditLogger.Infof("HashIDAuth: Successfully authenticated hash_id=%s, user_id=%s", hashID, user.ID)
+
+		c.Next()
+	}
 }

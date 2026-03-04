@@ -2,12 +2,15 @@ package backend
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,6 +58,7 @@ func (s *Store) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS users (
 		id TEXT PRIMARY KEY,
+		hash_id TEXT UNIQUE DEFAULT NULL,
 		email TEXT NOT NULL UNIQUE,
 		name TEXT,
 		avatar_url TEXT,
@@ -77,6 +81,11 @@ func (s *Store) initSchema() error {
 	);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Migration: Add hash_id column to users table for existing databases
+	if err := s.migrateAddHashIDColumn(); err != nil {
 		return err
 	}
 
@@ -204,6 +213,117 @@ func (s *Store) initSchema() error {
 	return err
 }
 
+// migrateAddHashIDColumn adds hash_id column to users table for existing databases
+func (s *Store) migrateAddHashIDColumn() error {
+	// Check if hash_id column exists
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'hash_id'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check hash_id column: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Column already exists
+	}
+
+	// Add hash_id column
+	log.Printf("🔄 Adding hash_id column to users table...")
+	_, err = s.db.Exec(`ALTER TABLE users ADD COLUMN hash_id TEXT UNIQUE DEFAULT NULL`)
+	if err != nil {
+		return fmt.Errorf("failed to add hash_id column: %w", err)
+	}
+	log.Printf("✅ hash_id column added successfully")
+
+	// Immediately migrate existing users to have hash_id
+	ctx := context.Background()
+	count, err = s.generateHashIDsForExistingUsers(ctx)
+	if err != nil {
+		log.Printf("⚠️  Failed to generate hash_ids for existing users: %v", err)
+	} else if count > 0 {
+		log.Printf("✅ Generated hash_id for %d existing users", count)
+	}
+
+	return nil
+}
+
+// generateHashIDsForExistingUsers generates hash_id for users who don't have one
+func (s *Store) generateHashIDsForExistingUsers(ctx context.Context) (int, error) {
+	// Find users without hash_id
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, created_at FROM users WHERE hash_id IS NULL OR hash_id = ''
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query users: %w", err)
+	}
+	defer rows.Close()
+
+	type userIDWithTime struct {
+		ID        string
+		CreatedAt time.Time
+	}
+	userIDs := make([]userIDWithTime, 0)
+	for rows.Next() {
+		var u userIDWithTime
+		var createdAt int64
+		if err := rows.Scan(&u.ID, &createdAt); err != nil {
+			return 0, fmt.Errorf("failed to scan user: %w", err)
+		}
+		u.CreatedAt = time.Unix(createdAt, 0)
+		userIDs = append(userIDs, u)
+	}
+
+	if len(userIDs) == 0 {
+		return 0, nil
+	}
+
+	// Generate hash_id for each user
+	count := 0
+	for _, u := range userIDs {
+		// Generate hash_id using user's created_at as base timestamp
+		timestamp := u.CreatedAt.UnixMilli()
+		var randomBytes [4]byte
+		if _, err := rand.Read(randomBytes[:]); err != nil {
+			randomBytes[0] = byte(timestamp >> 24)
+			randomBytes[1] = byte(timestamp >> 16)
+			randomBytes[2] = byte(timestamp >> 8)
+			randomBytes[3] = byte(timestamp)
+		}
+		randomPart := uint64(binary.BigEndian.Uint32(randomBytes[:]))
+		hashIDValue := (uint64(timestamp) << 24) | (randomPart & 0xFFFFFF)
+		hashID := GenerateBase62ID(hashIDValue)
+
+		// Check for collision and retry if needed
+		maxRetries := 10
+		for retry := 0; retry < maxRetries; retry++ {
+			// Try to update
+			result, err := s.db.ExecContext(ctx, `
+				UPDATE users SET hash_id = ? WHERE id = ? AND (hash_id IS NULL OR hash_id = '')
+			`, hashID, u.ID)
+			if err != nil {
+				// Check if it's a unique constraint violation
+				if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "constraint failed") {
+					// Collision, generate new hash_id
+					var newRandomBytes [4]byte
+					rand.Read(newRandomBytes[:])
+					newRandomPart := uint64(binary.BigEndian.Uint32(newRandomBytes[:]))
+					hashIDValue = (uint64(timestamp) << 24) | (newRandomPart & 0xFFFFFF)
+					hashID = GenerateBase62ID(hashIDValue)
+					continue
+				}
+				return count, err
+			}
+
+			rowsAffected, _ := result.RowsAffected()
+			if rowsAffected > 0 {
+				count++
+			}
+			break
+		}
+	}
+
+	return count, nil
+}
+
 // User operations
 
 // CreateUser creates or updates a user
@@ -220,11 +340,66 @@ func (s *Store) CreateUser(ctx context.Context, user *User) error {
 		// Update existing user
 		user.ID = existing.ID
 		user.CreatedAt = existing.CreatedAt // Keep original created_at
-		_, err := s.db.ExecContext(ctx, `
-			UPDATE users 
-			SET name = ?, avatar_url = ?, provider = ?, updated_at = ?
-			WHERE id = ?
-		`, user.Name, user.AvatarURL, user.Provider, now.Unix(), user.ID)
+
+		// Generate hash_id if existing user doesn't have one
+		if existing.HashID == "" {
+			// Generate unique hash_id with collision detection
+			maxRetries := 10
+			for i := 0; i < maxRetries; i++ {
+				timestamp := existing.CreatedAt.UnixMilli()
+				var randomBytes [4]byte
+				if _, err := rand.Read(randomBytes[:]); err != nil {
+					randomBytes[0] = byte(existing.CreatedAt.Unix() >> 24)
+					randomBytes[1] = byte(existing.CreatedAt.Unix() >> 16)
+					randomBytes[2] = byte(existing.CreatedAt.Unix() >> 8)
+					randomBytes[3] = byte(existing.CreatedAt.Unix())
+				}
+				randomPart := uint64(binary.BigEndian.Uint32(randomBytes[:]))
+				hashIDValue := (uint64(timestamp) << 24) | (randomPart & 0xFFFFFF)
+				candidateHashID := GenerateBase62ID(hashIDValue)
+
+				// Check if hash_id already exists
+				var exists bool
+				err := s.db.QueryRowContext(ctx, `SELECT 1 FROM users WHERE hash_id = ? LIMIT 1`, candidateHashID).Scan(&exists)
+				if err == sql.ErrNoRows {
+					user.HashID = candidateHashID
+					break
+				}
+				if err != nil {
+					// Error might be due to missing hash_id column, just use the generated hash_id
+					user.HashID = candidateHashID
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+		} else {
+			user.HashID = existing.HashID // Keep original hash_id
+		}
+
+		// Update user in database
+		// Try to update with hash_id first
+		if user.HashID != "" {
+			_, err = s.db.ExecContext(ctx, `
+				UPDATE users
+				SET name = ?, avatar_url = ?, provider = ?, updated_at = ?, hash_id = ?
+				WHERE id = ?
+			`, user.Name, user.AvatarURL, user.Provider, now.Unix(), user.HashID, user.ID)
+		} else {
+			_, err = s.db.ExecContext(ctx, `
+				UPDATE users
+				SET name = ?, avatar_url = ?, provider = ?, updated_at = ?
+				WHERE id = ?
+			`, user.Name, user.AvatarURL, user.Provider, now.Unix(), user.ID)
+		}
+
+		// If update fails due to missing hash_id column, retry without it
+		if err != nil && (strings.Contains(err.Error(), "no such column") || strings.Contains(err.Error(), "has no column named") || strings.Contains(err.Error(), "Unknown column")) {
+			_, err = s.db.ExecContext(ctx, `
+				UPDATE users
+				SET name = ?, avatar_url = ?, provider = ?, updated_at = ?
+				WHERE id = ?
+			`, user.Name, user.AvatarURL, user.Provider, now.Unix(), user.ID)
+		}
 		return err
 	}
 
@@ -232,10 +407,73 @@ func (s *Store) CreateUser(ctx context.Context, user *User) error {
 		user.ID = uuid.New().String()
 	}
 
+	// Generate hash_id if not set (with randomness to prevent guessing)
+	if user.HashID == "" {
+		// Generate unique hash_id with collision detection
+		maxRetries := 10
+		for i := 0; i < maxRetries; i++ {
+			// Use timestamp (in milliseconds) + 32-bit random for entropy
+			// This makes hash_id unpredictable even with timing information
+			timestamp := now.UnixMilli()
+
+			// Add 32 bits of randomness
+			var randomBytes [4]byte
+			if _, err := rand.Read(randomBytes[:]); err != nil {
+				randomBytes[0] = byte(now.Unix() >> 24)
+				randomBytes[1] = byte(now.Unix() >> 16)
+				randomBytes[2] = byte(now.Unix() >> 8)
+				randomBytes[3] = byte(now.Unix())
+			}
+			randomPart := uint64(binary.BigEndian.Uint32(randomBytes[:]))
+
+			// Combine timestamp (40 bits) + random (24 bits) to keep hash_id in reasonable range
+			// This gives us ~16 million possible hash_ids per millisecond
+			hashIDValue := (uint64(timestamp) << 24) | (randomPart & 0xFFFFFF)
+			candidateHashID := GenerateBase62ID(hashIDValue)
+
+			// Check if hash_id already exists
+			var exists bool
+			err := s.db.QueryRowContext(ctx, `SELECT 1 FROM users WHERE hash_id = ? LIMIT 1`, candidateHashID).Scan(&exists)
+			if err == sql.ErrNoRows {
+				// hash_id is unique, use it
+				user.HashID = candidateHashID
+				break
+			}
+			// If query failed for other reasons, still try to use the hash_id (will be caught by UNIQUE constraint if collision)
+			if err != nil {
+				user.HashID = candidateHashID
+				break
+			}
+			// hash_id collision, try again with new random value
+			// Add small delay to change timestamp slightly
+			time.Sleep(time.Millisecond)
+		}
+
+		// If still empty after retries, use a more collision-resistant approach
+		if user.HashID == "" {
+			// Use timestamp + full 32-bit random
+			timestamp := now.UnixMilli()
+			var randomBytes [4]byte
+			rand.Read(randomBytes[:])
+			randomPart := uint64(binary.BigEndian.Uint32(randomBytes[:]))
+			hashIDValue := (uint64(timestamp) << 32) | randomPart
+			user.HashID = GenerateBase62ID(hashIDValue)
+		}
+	}
+
+	// Try INSERT with hash_id first (for new installations)
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO users (id, email, name, avatar_url, provider, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, user.ID, user.Email, user.Name, user.AvatarURL, user.Provider, user.CreatedAt.Unix(), user.UpdatedAt.Unix())
+		INSERT INTO users (id, hash_id, email, name, avatar_url, provider, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, user.ID, user.HashID, user.Email, user.Name, user.AvatarURL, user.Provider, user.CreatedAt.Unix(), user.UpdatedAt.Unix())
+
+	// If INSERT fails due to missing hash_id column (existing database), retry without it
+	if err != nil && (strings.Contains(err.Error(), "no such column") || strings.Contains(err.Error(), "has no column named") || strings.Contains(err.Error(), "Unknown column")) {
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO users (id, email, name, avatar_url, provider, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, user.ID, user.Email, user.Name, user.AvatarURL, user.Provider, user.CreatedAt.Unix(), user.UpdatedAt.Unix())
+	}
 
 	return err
 }
@@ -245,15 +483,37 @@ func (s *Store) GetUser(ctx context.Context, id string) (*User, error) {
 	var user User
 	var createdAt, updatedAt int64
 
+	// Try to read hash_id first (for new installations)
+	var hashID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, email, name, avatar_url, provider, created_at, updated_at
+		SELECT id, hash_id, email, name, avatar_url, provider, created_at, updated_at
 		FROM users WHERE id = ?
-	`, id).Scan(&user.ID, &user.Email, &user.Name, &user.AvatarURL, &user.Provider, &createdAt, &updatedAt)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("user not found")
-	}
+	`, id).Scan(&user.ID, &hashID, &user.Email, &user.Name, &user.AvatarURL, &user.Provider, &createdAt, &updatedAt)
+
 	if err != nil {
-		return nil, err
+		// If query fails due to missing hash_id column, try without it
+		if strings.Contains(err.Error(), "no such column") || strings.Contains(err.Error(), "has no column named") {
+			err = s.db.QueryRowContext(ctx, `
+				SELECT id, email, name, avatar_url, provider, created_at, updated_at
+				FROM users WHERE id = ?
+			`, id).Scan(&user.ID, &user.Email, &user.Name, &user.AvatarURL, &user.Provider, &createdAt, &updatedAt)
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("user not found")
+			}
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("user not found")
+			}
+			return nil, err
+		}
+	}
+
+	// Handle hash_id (may be NULL or empty string for existing users)
+	if hashID.Valid && hashID.String != "" {
+		user.HashID = hashID.String
 	}
 
 	user.CreatedAt = time.Unix(createdAt, 0)
@@ -267,10 +527,64 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*User, error)
 	var user User
 	var createdAt, updatedAt int64
 
+	// Try to read hash_id first (for new installations)
+	var hashID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, email, name, avatar_url, provider, created_at, updated_at
+		SELECT id, hash_id, email, name, avatar_url, provider, created_at, updated_at
 		FROM users WHERE email = ?
-	`, email).Scan(&user.ID, &user.Email, &user.Name, &user.AvatarURL, &user.Provider, &createdAt, &updatedAt)
+	`, email).Scan(&user.ID, &hashID, &user.Email, &user.Name, &user.AvatarURL, &user.Provider, &createdAt, &updatedAt)
+
+	if err != nil {
+		// If query fails due to missing hash_id column, try without it
+		if strings.Contains(err.Error(), "no such column") || strings.Contains(err.Error(), "has no column named") {
+			err = s.db.QueryRowContext(ctx, `
+				SELECT id, email, name, avatar_url, provider, created_at, updated_at
+				FROM users WHERE email = ?
+			`, email).Scan(&user.ID, &user.Email, &user.Name, &user.AvatarURL, &user.Provider, &createdAt, &updatedAt)
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("user not found")
+			}
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("user not found")
+			}
+			return nil, err
+		}
+	}
+
+	// Handle hash_id (may be NULL or empty string for existing users)
+	if hashID.Valid && hashID.String != "" {
+		user.HashID = hashID.String
+	}
+
+	user.CreatedAt = time.Unix(createdAt, 0)
+	user.UpdatedAt = time.Unix(updatedAt, 0)
+
+	return &user, nil
+}
+
+// GetUserByHashID retrieves a user by HashID
+func (s *Store) GetUserByHashID(ctx context.Context, hashID string) (*User, error) {
+	var user User
+	var createdAt, updatedAt int64
+
+	// Check if hash_id column exists first
+	var columnCount int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'hash_id'
+	`).Scan(&columnCount)
+	if err != nil || columnCount == 0 {
+		return nil, fmt.Errorf("hash_id not supported in current database schema")
+	}
+
+	err = s.db.QueryRowContext(ctx, `
+		SELECT id, hash_id, email, name, avatar_url, provider, created_at, updated_at
+		FROM users WHERE hash_id = ?
+	`, hashID).Scan(&user.ID, &user.HashID, &user.Email, &user.Name, &user.AvatarURL, &user.Provider, &createdAt, &updatedAt)
+
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user not found")
 	}

@@ -199,6 +199,51 @@ func (s *Server) setupRoutes() {
 		api.POST("/upload", s.handleUpload)
 	}
 
+	// API routes using hash_id for authentication (public API access)
+	apiHashId := s.http.Group("/api/v1")
+	apiHashId.Use(AuditMiddlewareLite())
+	apiHashId.Use(HashIDAuthMiddleware(s.store))
+	{
+		// Notebook routes (via hash_id auth)
+		notebooks := apiHashId.Group("/notebooks")
+		{
+			notebooks.GET("", s.handleListNotebooks)
+			notebooks.GET("/stats", s.handleListNotebooksWithStats)
+			notebooks.POST("", s.handleCreateNotebook)
+			notebooks.GET("/:id", s.handleGetNotebook)
+			notebooks.PUT("/:id", s.handleUpdateNotebook)
+			notebooks.DELETE("/:id", s.handleDeleteNotebook)
+
+			// Sources within a notebook
+			notebooks.GET("/:id/sources", s.handleListSources)
+			notebooks.GET("/:id/sources/:sourceId", s.handleGetSource)
+			notebooks.POST("/:id/sources", s.handleAddSource)
+			notebooks.DELETE("/:id/sources/:sourceId", s.handleDeleteSource)
+
+			// Notes within a notebook
+			notebooks.GET("/:id/notes", s.handleListNotes)
+			notebooks.POST("/:id/notes", s.handleCreateNote)
+			notebooks.DELETE("/:id/notes/:noteId", s.handleDeleteNote)
+
+			// Transformations
+			notebooks.POST("/:id/transform", s.handleTransform)
+
+			// Chat within a notebook
+			notebooks.POST("/:id/chat", s.handleChat)
+			notebooks.GET("/:id/chat/sessions", s.handleListChatSessions)
+			notebooks.POST("/:id/chat/sessions", s.handleCreateChatSession)
+			notebooks.GET("/:id/chat/sessions/:sessionId", s.handleGetChatSession)
+			notebooks.DELETE("/:id/chat/sessions/:sessionId", s.handleDeleteChatSession)
+			notebooks.POST("/:id/chat/sessions/:sessionId/messages", s.handleSendMessage)
+
+			// Notebook overview
+			notebooks.GET("/:id/overview", s.handleNotebookOverview)
+		}
+
+		// Upload endpoint
+		apiHashId.POST("/upload", s.handleUpload)
+	}
+
 	// Public notebook routes (no authentication required)
 	public := s.http.Group("/public")
 	public.Use(AuditMiddlewareLite())

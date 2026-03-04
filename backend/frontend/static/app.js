@@ -644,7 +644,8 @@ class OpenNotebook {
                 'google': 'Google'
             };
             const providerName = providerNames[this.currentUser.provider] || this.currentUser.provider;
-            const tooltipText = `登录方式: ${providerName}\n账号ID: ${this.currentUser.email}`;
+            const hashIdDisplay = this.currentUser.hash_id ? `用户ID: ${this.currentUser.hash_id}\n` : '';
+            const tooltipText = `登录方式: ${providerName}\n${hashIdDisplay}账号: ${this.currentUser.email}`;
 
             // Update landing page
             if (btnLogin) btnLogin.classList.add('hidden');
@@ -1077,6 +1078,11 @@ class OpenNotebook {
         const notesDetailsView = document.querySelector('.notes-details-view');
         const sessionsPanel = document.getElementById('chatSessionsPanel');
 
+        // Reset chatMessages to use CSS default (remove inline style)
+        if (chatMessages) {
+            chatMessages.style.display = '';
+        }
+
         if (tab === 'note') {
             chatWrapper.style.display = 'none';
             if (sessionsPanel) sessionsPanel.classList.add('hidden');
@@ -1086,7 +1092,6 @@ class OpenNotebook {
             }
         } else if (tab === 'chat') {
             chatWrapper.style.display = 'flex';
-            if (chatMessages) chatMessages.style.display = 'flex';
             if (sessionsPanel) sessionsPanel.classList.add('hidden');
             if (notesDetailsView) notesDetailsView.style.display = 'none';
             if (noteViewContainer) {
@@ -2635,22 +2640,16 @@ class OpenNotebook {
 
         try {
             const sessions = await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions`);
-            console.log('loadChatSessions - API returned:', sessions);
             this.chatSessions = sessions || [];
 
             // Update session list UI if exists
             const sessionList = document.getElementById('chatSessionList');
-            const sessionsPanel = document.getElementById('chatSessionsPanel');
-            console.log('sessionList element:', sessionList ? 'found' : 'not found');
-            console.log('sessionsPanel element:', sessionsPanel ? 'found' : 'not found');
-            console.log('sessionsPanel.classList.contains("hidden"):', sessionsPanel ? sessionsPanel.classList.contains('hidden') : 'N/A');
 
             if (sessionList) {
                 if (this.chatSessions.length === 0) {
                     sessionList.innerHTML = '<p class="text-muted">暂无对话历史</p>';
-                    console.log('No sessions, showing empty message');
                 } else {
-                    const html = sessions.map(session => `
+                    sessionList.innerHTML = sessions.map(session => `
                         <div class="chat-session-item ${session.id === this.currentChatSession ? 'active' : ''}"
                              data-session-id="${session.id}">
                             <div class="session-content">
@@ -2664,10 +2663,6 @@ class OpenNotebook {
                             </button>
                         </div>
                     `).join('');
-
-                    console.log('Generated HTML length:', html.length);
-                    sessionList.innerHTML = html;
-                    console.log('sessionList.innerHTML set, children count:', sessionList.children.length);
 
                     // Add click handlers for session switching
                     sessionList.querySelectorAll('.chat-session-item').forEach(item => {
@@ -2749,35 +2744,22 @@ class OpenNotebook {
             return;
         }
 
-        console.log('saveCurrentSession - currentChatSession:', this.currentChatSession);
-
         try {
-            // If there's a current session, refresh the sessions list
+            // If there's a current session, check if it has messages
             if (this.currentChatSession) {
-                console.log('Session exists, refreshing list...');
-                // Session already exists, just refresh the list
-                const sessions = await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions`);
-                console.log('Sessions from API:', sessions);
+                const chatMessages = document.getElementById('chatMessages');
+                const messages = chatMessages.querySelectorAll('.chat-message');
+                if (messages.length === 0) {
+                    this.setStatus('当前会话为空，无需保存');
+                    return;
+                }
                 await this.loadChatSessions();
                 this.setStatus('会话已保存');
                 return;
             }
 
-            // No current session - ask user if they want to create a new session
-            if (!confirm('当前是新会话，还没有发送任何消息。\n\n是否创建一个新的会话？')) {
-                return;
-            }
-
-            // Create a new empty session
-            const response = await this.api(`/notebooks/${this.currentNotebook.id}/chat/sessions`, {
-                method: 'POST',
-                body: JSON.stringify({ title: '新对话' })
-            });
-
-            console.log('Created new session:', response);
-            this.currentChatSession = response.id;
-            await this.loadChatSessions();
-            this.setStatus('已创建新会话');
+            // No current session - show message that empty session doesn't need saving
+            this.setStatus('当前会话为空，无需保存');
         } catch (error) {
             console.error('Failed to save session:', error);
             this.showError(`保存失败: ${error.message}`);
