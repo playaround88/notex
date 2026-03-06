@@ -84,6 +84,11 @@ func (s *Store) initSchema() error {
 		return err
 	}
 
+	// Migration: Add status tracking columns to sources table
+	if err := s.migrateSourceStatusColumns(); err != nil {
+		return err
+	}
+
 	// Migration: Add hash_id column to users table for existing databases
 	if err := s.migrateAddHashIDColumn(); err != nil {
 		return err
@@ -128,6 +133,9 @@ func (s *Store) initSchema() error {
 		file_name TEXT,
 		file_size INTEGER,
 		chunk_count INTEGER DEFAULT 0,
+		status TEXT DEFAULT 'completed',
+		progress INTEGER DEFAULT 100,
+		error_msg TEXT DEFAULT '',
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL,
 		metadata TEXT,
@@ -213,6 +221,43 @@ func (s *Store) initSchema() error {
 	return err
 }
 
+// migrateSourceStatusColumns adds status tracking columns to sources table
+func (s *Store) migrateSourceStatusColumns() error {
+	// Check if status column exists
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sources') WHERE name = 'status'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check status column: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Columns already exist
+	}
+
+	log.Printf("🔄 Adding status tracking columns to sources table...")
+	
+	// Add status column
+	_, err = s.db.Exec(`ALTER TABLE sources ADD COLUMN status TEXT DEFAULT 'completed'`)
+	if err != nil {
+		return fmt.Errorf("failed to add status column: %w", err)
+	}
+
+	// Add progress column
+	_, err = s.db.Exec(`ALTER TABLE sources ADD COLUMN progress INTEGER DEFAULT 100`)
+	if err != nil {
+		return fmt.Errorf("failed to add progress column: %w", err)
+	}
+
+	// Add error_msg column
+	_, err = s.db.Exec(`ALTER TABLE sources ADD COLUMN error_msg TEXT DEFAULT ''`)
+	if err != nil {
+		return fmt.Errorf("failed to add error_msg column: %w", err)
+	}
+
+	log.Printf("✅ Status tracking columns added successfully")
+	return nil
+}
+
 // migrateAddHashIDColumn adds hash_id column to users table for existing databases
 func (s *Store) migrateAddHashIDColumn() error {
 	// Check if hash_id column exists
@@ -226,9 +271,10 @@ func (s *Store) migrateAddHashIDColumn() error {
 		return nil // Column already exists
 	}
 
-	// Add hash_id column
+	// Add hash_id column WITHOUT UNIQUE constraint first
+	// We'll add the unique index after populating data
 	log.Printf("🔄 Adding hash_id column to users table...")
-	_, err = s.db.Exec(`ALTER TABLE users ADD COLUMN hash_id TEXT UNIQUE DEFAULT NULL`)
+	_, err = s.db.Exec(`ALTER TABLE users ADD COLUMN hash_id TEXT DEFAULT NULL`)
 	if err != nil {
 		return fmt.Errorf("failed to add hash_id column: %w", err)
 	}
@@ -241,6 +287,16 @@ func (s *Store) migrateAddHashIDColumn() error {
 		log.Printf("⚠️  Failed to generate hash_ids for existing users: %v", err)
 	} else if count > 0 {
 		log.Printf("✅ Generated hash_id for %d existing users", count)
+	}
+
+	// Create unique index on hash_id (only on non-null values)
+	log.Printf("🔄 Creating unique index on hash_id...")
+	_, err = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_hash_id ON users(hash_id) WHERE hash_id IS NOT NULL AND hash_id != ''`)
+	if err != nil {
+		log.Printf("⚠️  Failed to create unique index on hash_id: %v", err)
+		// Don't fail the migration, just log the error
+	} else {
+		log.Printf("✅ Unique index on hash_id created successfully")
 	}
 
 	return nil
@@ -954,7 +1010,9 @@ func (s *Store) ListPublicNotebooks(ctx context.Context) ([]NotebookWithStats, e
 
 // CreateSource creates a new source
 func (s *Store) CreateSource(ctx context.Context, source *Source) error {
-	source.ID = uuid.New().String()
+	if source.ID == "" {
+		source.ID = uuid.New().String()
+	}
 	now := time.Now()
 	source.CreatedAt = now
 	source.UpdatedAt = now
@@ -962,10 +1020,11 @@ func (s *Store) CreateSource(ctx context.Context, source *Source) error {
 	metadataJSON, _ := json.Marshal(source.Metadata)
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sources (id, notebook_id, name, type, url, content, file_name, file_size, chunk_count, created_at, updated_at, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sources (id, notebook_id, name, type, url, content, file_name, file_size, chunk_count, status, progress, error_msg, created_at, updated_at, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, source.ID, source.NotebookID, source.Name, source.Type, source.URL, source.Content,
-		source.FileName, source.FileSize, source.ChunkCount, now.Unix(), now.Unix(), string(metadataJSON))
+		source.FileName, source.FileSize, source.ChunkCount, source.Status, source.Progress, source.ErrorMsg,
+		now.Unix(), now.Unix(), string(metadataJSON))
 
 	return err
 }
@@ -977,10 +1036,11 @@ func (s *Store) GetSource(ctx context.Context, id string) (*Source, error) {
 	var createdAt, updatedAt int64
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, notebook_id, name, type, url, content, file_name, file_size, chunk_count, created_at, updated_at, metadata
+		SELECT id, notebook_id, name, type, url, content, file_name, file_size, chunk_count, status, progress, error_msg, created_at, updated_at, metadata
 		FROM sources WHERE id = ?
 	`, id).Scan(&src.ID, &src.NotebookID, &src.Name, &src.Type, &src.URL, &src.Content,
-		&src.FileName, &src.FileSize, &src.ChunkCount, &createdAt, &updatedAt, &metadataJSON)
+		&src.FileName, &src.FileSize, &src.ChunkCount, &src.Status, &src.Progress, &src.ErrorMsg,
+		&createdAt, &updatedAt, &metadataJSON)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("source not found")
 	}
@@ -1012,6 +1072,7 @@ func (s *Store) GetSourceByFileName(ctx context.Context, filename string) (*Sour
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
 			s.id, s.notebook_id, s.name, s.type, s.url, s.content, s.file_name, s.file_size, s.chunk_count,
+			s.status, s.progress, s.error_msg,
 			s.created_at, s.updated_at, s.metadata,
 			n.id as nb_id, n.user_id as nb_user_id, n.name as nb_name, n.description as nb_description,
 			n.is_public as nb_is_public, n.public_token as nb_public_token,
@@ -1021,7 +1082,8 @@ func (s *Store) GetSourceByFileName(ctx context.Context, filename string) (*Sour
 		WHERE s.file_name = ?
 	`, filename).Scan(
 		&src.ID, &src.NotebookID, &src.Name, &src.Type, &src.URL, &src.Content,
-		&src.FileName, &src.FileSize, &src.ChunkCount, &createdAt, &updatedAt, &metadataJSON,
+		&src.FileName, &src.FileSize, &src.ChunkCount, &src.Status, &src.Progress, &src.ErrorMsg,
+		&createdAt, &updatedAt, &metadataJSON,
 		&notebook.ID, &notebook.UserID, &notebook.Name, &notebook.Description,
 		&notebook.IsPublic, &publicToken,
 		&notebookCreatedAt, &notebookUpdatedAt, &notebookMetadataJSON,
@@ -1064,7 +1126,7 @@ func (s *Store) GetSourceByFileName(ctx context.Context, filename string) (*Sour
 // ListSources retrieves all sources for a notebook
 func (s *Store) ListSources(ctx context.Context, notebookID string) ([]Source, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, notebook_id, name, type, url, content, file_name, file_size, chunk_count, created_at, updated_at, metadata
+		SELECT id, notebook_id, name, type, url, content, file_name, file_size, chunk_count, status, progress, error_msg, created_at, updated_at, metadata
 		FROM sources WHERE notebook_id = ? ORDER BY created_at DESC
 	`, notebookID)
 	if err != nil {
@@ -1079,7 +1141,8 @@ func (s *Store) ListSources(ctx context.Context, notebookID string) ([]Source, e
 		var createdAt, updatedAt int64
 
 		if err := rows.Scan(&src.ID, &src.NotebookID, &src.Name, &src.Type, &src.URL, &src.Content,
-			&src.FileName, &src.FileSize, &src.ChunkCount, &createdAt, &updatedAt, &metadataJSON); err != nil {
+			&src.FileName, &src.FileSize, &src.ChunkCount, &src.Status, &src.Progress, &src.ErrorMsg,
+			&createdAt, &updatedAt, &metadataJSON); err != nil {
 			return nil, err
 		}
 
@@ -1587,4 +1650,26 @@ func (s *Store) LogActivity(ctx context.Context, log *ActivityLog) error {
 // Close closes the database connection
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// UpdateSourceStatus updates the processing status of a source
+func (s *Store) UpdateSourceStatus(ctx context.Context, id, status string, progress int, errorMsg string) error {
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sources 
+		SET status = ?, progress = ?, error_msg = ?, updated_at = ?
+		WHERE id = ?
+	`, status, progress, errorMsg, now, id)
+	return err
+}
+
+// UpdateSourceContent updates the content and chunk count of a source
+func (s *Store) UpdateSourceContent(ctx context.Context, id string, content string, chunkCount int) error {
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sources 
+		SET content = ?, chunk_count = ?, status = 'completed', progress = 100, updated_at = ?
+		WHERE id = ?
+	`, content, chunkCount, now, id)
+	return err
 }

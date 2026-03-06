@@ -230,6 +230,13 @@ CHUNK_OVERLAP=200      # 分块重叠
 # 文档转换
 ENABLE_MARKITDOWN=true  # 使用 Microsoft markitdown 更好地转换 PDF/DOCX
 
+# 音频转录
+ENABLE_VOSK_TRANSCRIBER=false  # 启用音频文件转录
+# 中文模型路径示例
+VOSK_MODEL_PATH=/root/.cache/vosk/vosk-model-small-cn-0.22
+# 英文模型路径示例
+# VOSK_MODEL_PATH=/root/.cache/vosk/vosk-model-small-en-us-0.15
+
 # 播客生成
 ENABLE_PODCAST=true
 PODCAST_VOICE=alloy    # 选项：alloy、echo、fable、onyx、nova、shimmer

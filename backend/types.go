@@ -21,12 +21,15 @@ type Source struct {
 	ID         string                 `json:"id"`
 	NotebookID string                 `json:"notebook_id"`
 	Name       string                 `json:"name"`
-	Type       string                 `json:"type"` // "file", "url", "text", "youtube"
+	Type       string                 `json:"type"` // "file", "url", "text", "youtube", "audio"
 	URL        string                 `json:"url,omitempty"`
 	Content    string                 `json:"content,omitempty"`
 	FileName   string                 `json:"file_name,omitempty"`
 	FileSize   int64                  `json:"file_size,omitempty"`
 	ChunkCount int                    `json:"chunk_count"`
+	Status     string                 `json:"status"`     // "pending", "processing", "completed", "error"
+	Progress   int                    `json:"progress"`   // 0-100
+	ErrorMsg   string                 `json:"error_msg,omitempty"`
 	CreatedAt  time.Time              `json:"created_at"`
 	UpdatedAt  time.Time              `json:"updated_at"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`

@@ -58,6 +58,10 @@ type Config struct {
 	// Document conversion
 	EnableMarkitdown bool
 
+	// Audio transcription
+	EnableVoskTranscriber bool
+	VoskModelPath        string // Path to vosk model directory
+
 	// Demo settings
 	AllowMultipleNotesOfSameType bool
 
@@ -133,6 +137,8 @@ func LoadConfig() Config {
 		EnablePodcast:                getEnvBool("ENABLE_PODCAST", true),
 		PodcastVoice:                 getEnv("PODCAST_VOICE", "alloy"),
 		EnableMarkitdown:             getEnvBool("ENABLE_MARKITDOWN", true),
+		EnableVoskTranscriber:        getEnvBool("ENABLE_VOSK_TRANSCRIBER", false),
+		VoskModelPath:                getEnv("VOSK_MODEL_PATH", "/usr/local/share/vosk-model-en"),
 		AllowMultipleNotesOfSameType: getEnvBool("ALLOW_MULTIPLE_NOTES_OF_SAME_TYPE", true),
 		LangChainAPIKey:              getEnv("LANGCHAIN_API_KEY", ""),
 		LangChainProject:             getEnv("LANGCHAIN_PROJECT", "notex"),

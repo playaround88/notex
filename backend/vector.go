@@ -61,8 +61,13 @@ func (vs *VectorStore) IngestDocuments(ctx context.Context, notebookID string, p
 
 // ExtractDocument reads and converts a document to text/markdown
 func (vs *VectorStore) ExtractDocument(ctx context.Context, path string) (string, error) {
-	// Check if file needs markitdown conversion
+	// Check if file is an audio file
 	ext := strings.ToLower(filepath.Ext(path))
+	if vs.isAudioFile(ext) {
+		return vs.transcribeAudio(path)
+	}
+
+	// Check if file needs markitdown conversion
 	if vs.cfg.EnableMarkitdown && vs.needsMarkitdown(ext) {
 		content, err := vs.convertWithMarkitdown(path)
 		if err != nil {
@@ -563,4 +568,72 @@ func (vs *VectorStore) convertWithMarkitdown(filePath string) (string, error) {
 
 	fmt.Printf("[VectorStore] markitdown conversion successful, output size: %d bytes\n", len(content))
 	return string(content), nil
+}
+
+// isAudioFile checks if the file extension is an audio format
+func (vs *VectorStore) isAudioFile(ext string) bool {
+	audioExts := map[string]bool{
+		".mp3":  true,
+		".wav":  true,
+		".m4a":  true,
+		".aac":  true,
+		".flac": true,
+		".ogg":  true,
+		".wma":  true,
+		".opus": true,
+		".mp4":  true, // Also handle video files with audio
+		".avi":  true,
+		".mkv":  true,
+		".mov":  true,
+		".webm": true,
+	}
+	return audioExts[ext]
+}
+
+// transcribeAudio transcribes an audio file using vosk-transcriber
+func (vs *VectorStore) transcribeAudio(audioPath string) (string, error) {
+	fmt.Printf("[VectorStore] Transcribing audio file: %s\n", audioPath)
+
+	if !vs.cfg.EnableVoskTranscriber {
+		return "", fmt.Errorf("vosk-transcriber is disabled. Please set ENABLE_VOSK_TRANSCRIBER=true and ensure vosk-transcriber is installed")
+	}
+
+	// Check if vosk-transcriber is available
+	if _, err := exec.LookPath("vosk-transcriber"); err != nil {
+		return "", fmt.Errorf("vosk-transcriber not found. Please install it from https://github.com/alphacep/vosk-transcriber")
+	}
+
+	// Prepare output file path
+	outputFile := filepath.Join(os.TempDir(), fmt.Sprintf("transcript_%d.txt", os.Getpid()))
+
+	// Build command arguments
+	args := []string{"-i", audioPath, "-o", outputFile}
+	
+	// Add model path if specified
+	if vs.cfg.VoskModelPath != "" {
+		args = []string{"-m", vs.cfg.VoskModelPath, "-i", audioPath, "-o", outputFile}
+	}
+
+	// Run vosk-transcriber
+	cmd := exec.Command("vosk-transcriber", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("[VectorStore] vosk-transcriber error: %s\n", string(output))
+		return "", fmt.Errorf("failed to transcribe audio: %w, output: %s", err, string(output))
+	}
+
+	// Read the transcript file
+	transcript, err := os.ReadFile(outputFile)
+	if err != nil {
+		os.Remove(outputFile)
+		return "", fmt.Errorf("failed to read transcript file: %w", err)
+	}
+
+	// Clean up output file
+	os.Remove(outputFile)
+
+	transcriptText := string(transcript)
+	fmt.Printf("[VectorStore] Audio transcribed successfully, transcript size: %d bytes\n", len(transcriptText))
+	
+	return transcriptText, nil
 }

@@ -1733,10 +1733,32 @@ class OpenNotebook {
                 const card = clone.querySelector('.source-card');
 
                 card.dataset.id = source.id;
+                card.dataset.status = source.status || 'completed';
                 card.querySelector('.source-type-badge').textContent = source.type;
                 card.querySelector('.source-name').textContent = source.name;
                 card.querySelector('.source-meta').textContent = this.formatFileSize(source.file_size) || '文本来源';
                 card.querySelector('.chunk-count').textContent = source.chunk_count || 0;
+
+                // Add progress indicator for processing sources
+                if (source.status === 'processing' || source.status === 'pending') {
+                    const progressIndicator = document.createElement('div');
+                    progressIndicator.className = 'source-progress';
+                    progressIndicator.innerHTML = `
+                        <div class="progress-bar-small">
+                            <div class="progress-fill-small" style="width: ${this.getProgressValue(source.status, source.progress || 0)}%"></div>
+                        </div>
+                        <div class="progress-text-small">${this.getStatusText(source.status, source.progress || 0)}</div>
+                    `;
+                    card.appendChild(progressIndicator);
+                }
+
+                // Add error indicator
+                if (source.status === 'error') {
+                    const errorIndicator = document.createElement('div');
+                    errorIndicator.className = 'source-error';
+                    errorIndicator.textContent = source.error_msg || '处理失败';
+                    card.appendChild(errorIndicator);
+                }
 
                 const icon = this.getSourceIcon(source.type);
                 card.querySelector('.source-icon').innerHTML = icon;
@@ -1755,9 +1777,41 @@ class OpenNotebook {
                 container.appendChild(clone);
             });
 
+            // Start polling for processing sources
+            this.startPollingForProcessingSources(sources);
+
             this.updateFooter();
         } catch (error) {
             console.error('加载来源失败:', error);
+        }
+    }
+
+    // Start polling for any processing sources
+    startPollingForProcessingSources(sources) {
+        if (!this.processingSources) {
+            this.processingSources = new Map();
+        }
+
+        // Clear existing polling intervals
+        this.clearPollingIntervals();
+
+        sources.forEach(source => {
+            if (source.status === 'processing' || source.status === 'pending') {
+                // Add to processing list
+                this.processingSources.set(source.id, source);
+                // Start polling for this source
+                this.pollSourceStatus(source.id);
+            }
+        });
+    }
+
+    // Clear all polling intervals
+    clearPollingIntervals() {
+        if (this.pollingIntervals) {
+            this.pollingIntervals.forEach(clearInterval);
+            this.pollingIntervals = [];
+        } else {
+            this.pollingIntervals = [];
         }
     }
 
@@ -1892,7 +1946,8 @@ class OpenNotebook {
             return;
         }
 
-        this.showLoading('处理中...');
+        // Close modal immediately
+        this.closeModals();
 
         for (const file of files) {
             const formData = new FormData();
@@ -1900,20 +1955,284 @@ class OpenNotebook {
             formData.append('notebook_id', this.currentNotebook.id);
 
             try {
-                await this.api('/upload', {
+                const response = await this.api('/upload', {
                     method: 'POST',
                     body: formData,
                 });
+                
+                // Add to processing list and show card immediately
+                this.addProcessingSource(response);
+                
+                // Add card to UI immediately with progress
+                this.addSourceCardToGrid(response);
+                
+                // Start polling for status
+                this.pollSourceStatus(response.id);
             } catch (error) {
                 this.showError(`上传失败: ${file.name} - ${error.message}`);
             }
         }
 
-        this.hideLoading();
-        this.closeModals();
-        await this.loadSources();
         await this.updateCurrentNotebookCounts();
         document.getElementById('fileInput').value = '';
+    }
+
+    addProcessingSource(source) {
+        // Add to the sources list with processing status
+        if (!this.processingSources) {
+            this.processingSources = new Map();
+        }
+        this.processingSources.set(source.id, source);
+    }
+    
+    addSourceCardToGrid(source) {
+        const sourcesGrid = document.getElementById('sourcesGrid');
+        if (!sourcesGrid) return;
+        
+        const template = document.getElementById('sourceTemplate');
+        const clone = template.content.cloneNode(true);
+        const card = clone.querySelector('.source-card');
+        
+        card.dataset.id = source.id;
+        card.dataset.status = source.status || 'pending';
+        card.querySelector('.source-type-badge').textContent = source.type;
+        card.querySelector('.source-name').textContent = source.name;
+        card.querySelector('.source-meta').textContent = this.formatFileSize(source.file_size) || '等待中...';
+        card.querySelector('.chunk-count').textContent = '0';
+        
+        const icon = this.getSourceIcon(source.type);
+        card.querySelector('.source-icon').innerHTML = icon;
+        
+        // Add progress indicator for processing sources
+        if (source.status === 'processing' || source.status === 'pending') {
+            const progressIndicator = document.createElement('div');
+            progressIndicator.className = 'source-progress';
+            progressIndicator.innerHTML = `
+                <div class="progress-bar-small">
+                    <div class="progress-fill-small" style="width: ${source.progress || 0}%"></div>
+                </div>
+                <div class="progress-text-small">${this.getStatusText(source.status, source.progress || 0)}</div>
+            `;
+            card.appendChild(progressIndicator);
+        }
+        
+        // Add remove button handler
+        const removeBtn = card.querySelector('.btn-remove-source');
+        removeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.removeSource(source.id);
+        });
+        
+        // Add click event to open resource preview
+        card.addEventListener('click', () => {
+            this.resourceTabManager.openTab(source);
+        });
+        
+        // Insert at the beginning of the grid
+        sourcesGrid.insertBefore(clone, sourcesGrid.firstChild);
+    }
+
+    async pollSourceStatus(sourceId) {
+        console.log(`[Poll] Starting poll for source: ${sourceId}`);
+        const pollInterval = setInterval(async () => {
+            try {
+                const response = await this.api(`/sources/${sourceId}`);
+                const source = response;
+
+                console.log(`[Poll] Source ${sourceId}: status=${source.status}, progress=${source.progress}`);
+
+                // Update processing status
+                if (this.processingSources) {
+                    this.processingSources.set(sourceId, source);
+                    this.updateProcessingUI();
+                }
+
+                // Check if processing is complete or failed
+                if (source.status === 'completed' || source.status === 'error') {
+                    console.log(`[Poll] Source ${sourceId} finished: ${source.status}`);
+                    clearInterval(pollInterval);
+
+                    // Show 100% completion message
+                    if (this.processingSources) {
+                        // Keep status as 'processing' to show progress bar, but set progress to 100
+                        this.processingSources.set(sourceId, { ...source, status: 'processing', progress: 100 });
+                        this.updateProcessingUI();
+                    }
+
+                    // Wait 2 seconds before removing progress bar
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+
+                    // Update card with final data (removes progress bar)
+                    await this.updateSourceCard(sourceId);
+
+                    // Remove from processing list
+                    if (this.processingSources && this.processingSources.has(sourceId)) {
+                        this.processingSources.delete(sourceId);
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to poll source status:', error);
+                clearInterval(pollInterval);
+            }
+        }, 1000); // Poll every 1 second for smoother progress
+
+        // Track the interval for cleanup
+        if (!this.pollingIntervals) {
+            this.pollingIntervals = [];
+        }
+        this.pollingIntervals.push(pollInterval);
+    }
+
+    updateProcessingUI() {
+        if (!this.processingSources || this.processingSources.size === 0) {
+            return;
+        }
+        
+        // Update each processing source card
+        for (const [id, source] of this.processingSources) {
+            const card = document.querySelector(`.source-card[data-id="${id}"]`);
+            if (!card) {
+                // Card doesn't exist, reload sources
+                this.loadSources();
+                return;
+            }
+            
+            // Remove existing progress indicator if any
+            const existingProgress = card.querySelector('.source-progress');
+            if (existingProgress) {
+                existingProgress.remove();
+            }
+            
+            // Remove existing error if any
+            const existingError = card.querySelector('.source-error');
+            if (existingError) {
+                existingError.remove();
+            }
+            
+            // If processing or error, add progress indicator
+            if (source.status === 'processing' || source.status === 'pending' || source.status === 'error') {
+                const progressIndicator = document.createElement('div');
+                progressIndicator.className = 'source-progress';
+
+                const statusText = this.getStatusText(source.status, source.progress);
+                const isError = source.status === 'error';
+                const progressValue = this.getProgressValue(source.status, source.progress || 0);
+
+                progressIndicator.innerHTML = `
+                    <div class="progress-bar-small ${isError ? 'error' : ''}">
+                        <div class="progress-fill-small" style="width: ${progressValue}%"></div>
+                    </div>
+                    <div class="progress-text-small">${statusText}</div>
+                `;
+
+                card.appendChild(progressIndicator);
+                card.dataset.status = source.status;
+            } else if (source.status === 'completed') {
+                // Show 100% progress before removing
+                const progressIndicator = document.createElement('div');
+                progressIndicator.className = 'source-progress';
+
+                const statusText = this.getStatusText('processing', 100);
+
+                progressIndicator.innerHTML = `
+                    <div class="progress-bar-small">
+                        <div class="progress-fill-small" style="width: 100%"></div>
+                    </div>
+                    <div class="progress-text-small">${statusText}</div>
+                `;
+
+                card.appendChild(progressIndicator);
+            }
+        }
+    }
+
+    getStatusText(status, progress) {
+        switch (status) {
+            case 'pending':
+                return '等待处理...';
+            case 'processing':
+                return `处理中... ${progress}%`;
+            case 'completed':
+                return '完成 ✓';
+            case 'error':
+                return '处理失败';
+            default:
+                return `${progress}%`;
+        }
+    }
+
+    getProgressValue(status, progress) {
+        switch (status) {
+            case 'pending':
+                return 1; // Show at least 1% for pending state
+            case 'processing':
+            case 'completed':
+            case 'error':
+                return progress;
+            default:
+                return progress || 1;
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    async updateSourceCard(sourceId) {
+        try {
+            const source = await this.api(`/sources/${sourceId}`);
+            const card = document.querySelector(`.source-card[data-id="${sourceId}"]`);
+            if (!card) {
+                // Card not found, reload all sources
+                await this.loadSources();
+                return;
+            }
+            
+            // Update card content
+            card.dataset.status = source.status || '';
+            
+            // Remove progress indicator
+            const progress = card.querySelector('.source-progress');
+            if (progress) {
+                progress.remove();
+            }
+            
+            // Remove error indicator
+            const error = card.querySelector('.source-error');
+            if (error) {
+                error.remove();
+            }
+            
+            // Update file size display
+            if (source.file_size) {
+                card.querySelector('.source-meta').textContent = this.formatFileSize(source.file_size);
+            }
+            
+            // Update chunk count
+            card.querySelector('.chunk-count').textContent = source.chunk_count || 0;
+            
+            // Add click handler if not already added
+            if (!card.hasAttribute('data-handled')) {
+                card.setAttribute('data-handled', 'true');
+                const removeBtn = card.querySelector('.btn-remove-source');
+                if (removeBtn) {
+                    removeBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.removeSource(source.id);
+                    });
+                }
+                
+                card.addEventListener('click', () => {
+                    this.resourceTabManager.openTab(source);
+                });
+            }
+        } catch (error) {
+            console.error('Failed to update source card:', error);
+            // Fallback to reload all sources
+            await this.loadSources();
+        }
     }
 
     async handleTextSource(e) {

@@ -45,10 +45,11 @@ func main() {
 	w, err := rotatelogs.New(
 		logFiles,
 		rotatelogs.WithLinkName("./logs/notex.log"),
-		rotatelogs.WithMaxAge(time.Duration(7)*24*time.Hour),
+		rotatelogs.WithMaxAge(7*24*time.Hour),
 		rotatelogs.WithRotationTime(24*time.Hour))
 	if err != nil {
-		golog.Fatal(err)
+		fmt.Fprintf(os.Stderr, "Failed to create log file: %v\n", err)
+		os.Exit(1)
 	}
 	defer w.Close()
 	golog.SetOutput(w)
@@ -56,15 +57,15 @@ func main() {
 	// Load and validate configuration
 	cfg := backend.LoadConfig()
 	if err := backend.ValidateConfig(cfg); err != nil {
-		golog.Fatalf("configuration error: %v\n\n"+
-			"Required environment variables:\n"+
-			"  - OPENAI_API_KEY (for OpenAI) or\n"+
-			"  - OLLAMA_BASE_URL (for local Ollama)\n\n"+
-			"Optional:\n"+
-			"  - VECTOR_STORE_TYPE (default: sqlite)\n"+
-			"  - STORE_PATH (default: ./data/checkpoints.db)\n"+
-			"  - SERVER_PORT (default: 8080)\n"+
-			"Error: %v", err, err)
+		fmt.Fprintf(os.Stderr, "\n❌ Configuration Error:\n\n%v\n\n", err)
+		fmt.Fprintf(os.Stderr, "Required environment variables:\n")
+		fmt.Fprintf(os.Stderr, "  - OPENAI_API_KEY (for OpenAI) or\n")
+		fmt.Fprintf(os.Stderr, "  - OLLAMA_BASE_URL (for local Ollama)\n\n")
+		fmt.Fprintf(os.Stderr, "Optional:\n")
+		fmt.Fprintf(os.Stderr, "  - VECTOR_STORE_TYPE (default: sqlite)\n")
+		fmt.Fprintf(os.Stderr, "  - STORE_PATH (default: ./data/checkpoints.db)\n")
+		fmt.Fprintf(os.Stderr, "  - SERVER_PORT (default: 8080)\n\n")
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
@@ -89,16 +90,18 @@ func main() {
 func runServerMode(cfg backend.Config) {
 	server, err := backend.NewServer(cfg)
 	if err != nil {
-		golog.Fatalf("failed to create server: %v", err)
+		fmt.Fprintf(os.Stderr, "\n❌ Failed to create server: %v\n", err)
+		os.Exit(1)
 	}
 
-	golog.Infof("version:     %s", Version)
-	golog.Infof("server:      http://%s:%s", cfg.ServerHost, cfg.ServerPort)
-	golog.Infof("llm:         %s", cfg.OpenAIModel)
-	golog.Infof("vector store: %s", cfg.VectorStoreType)
+	fmt.Printf("\n✅ Notex v%s\n", Version)
+	fmt.Printf("📡 Server: http://%s:%s\n", cfg.ServerHost, cfg.ServerPort)
+	fmt.Printf("🤖 LLM: %s\n", cfg.OpenAIModel)
+	fmt.Printf("📦 Vector Store: %s\n\n", cfg.VectorStoreType)
 
 	if err := server.Start(); err != nil {
-		golog.Fatalf("server error: %v", err)
+		fmt.Fprintf(os.Stderr, "\n❌ Server error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/kataras/golog"
+	"github.com/tmc/langchaingo/llms"
 )
 
 //go:embed frontend/index.html frontend/static
@@ -78,10 +79,17 @@ func NewServer(cfg Config) (*Server, error) {
 		golog.Warn("⚠️  No LLM API key configured, memory manager disabled")
 	}
 
+	// Initialize processing queue for async file processing
+	golog.Info("Initializing processing queue...")
+	InitProcessingQueue(store, vectorStore, agent)
+	golog.Infof("✅ processing queue initialized")
+
 	// Create Gin router
+	golog.Info("Creating Gin router...")
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery(), gin.Logger())
+	golog.Info("Gin router created")
 
 	// Set max upload size for multipart forms
 	router.MaxMultipartMemory = cfg.MaxUploadSize
@@ -197,6 +205,9 @@ func (s *Server) setupRoutes() {
 
 		// Upload endpoint
 		api.POST("/upload", s.handleUpload)
+
+		// Source status endpoint (get source by ID)
+		api.GET("/sources/:id", s.handleGetSourceByID)
 	}
 
 	// API routes using hash_id for authentication (public API access)
@@ -495,6 +506,26 @@ func (s *Server) handleListSources(c *gin.Context) {
 	c.JSON(http.StatusOK, sources)
 }
 
+func (s *Server) handleGetSourceByID(c *gin.Context) {
+	ctx := context.Background()
+	sourceID := c.Param("id")
+	userID := c.GetString("user_id")
+
+	source, err := s.store.GetSource(ctx, sourceID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "Source not found"})
+		return
+	}
+
+	// Check if user has access to the notebook containing this source
+	if err := s.checkNotebookAccess(ctx, source.NotebookID, userID); err != nil {
+		c.JSON(http.StatusForbidden, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, source)
+}
+
 func (s *Server) handleGetSource(c *gin.Context) {
 	ctx := context.Background()
 	notebookID := c.Param("id")
@@ -635,79 +666,81 @@ func (s *Server) checkNotebookAccess(ctx context.Context, notebookID, userID str
 }
 
 func (s *Server) handleUpload(c *gin.Context) {
-	ctx := context.Background()
 	userID := c.GetString("user_id")
 	notebookID := c.PostForm("notebook_id")
 
 	if notebookID == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "notebook_id required"})
+		c.JSON(400, ErrorResponse{Error: "notebook_id required"})
 		return
 	}
 
-	if err := s.checkNotebookAccess(ctx, notebookID, userID); err != nil {
-		c.JSON(http.StatusForbidden, ErrorResponse{Error: err.Error()})
+	if err := s.checkNotebookAccess(c.Request.Context(), notebookID, userID); err != nil {
+		c.JSON(403, ErrorResponse{Error: err.Error()})
 		return
 	}
 
 	file, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "file required"})
+		c.JSON(400, ErrorResponse{Error: "file required"})
 		return
 	}
 
-	// Generate unique filename to avoid conflicts
+	// Generate unique filename
 	ext := filepath.Ext(file.Filename)
 	baseName := file.Filename[:len(file.Filename)-len(ext)]
 	uniqueFileName := fmt.Sprintf("%s_%s%s", baseName, uuid.New().String()[:8], ext)
+	extLower := strings.ToLower(ext)
 
-	// Store in user-specific directory for isolation
+	// Store file
 	userUploadDir := fmt.Sprintf("./data/uploads/%s", userID)
 	tempPath := fmt.Sprintf("%s/%s", userUploadDir, uniqueFileName)
 
-	// Ensure user uploads directory exists
 	if err := os.MkdirAll(userUploadDir, 0755); err != nil {
-		golog.Errorf("failed to create user uploads directory: %v", err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to create uploads directory"})
+		golog.Errorf("failed to create uploads directory: %v", err)
+		c.JSON(500, ErrorResponse{Error: "Failed to create uploads directory"})
 		return
 	}
 
-	// Save file
 	if err := c.SaveUploadedFile(file, tempPath); err != nil {
 		golog.Errorf("failed to save file: %v", err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to save file: %v", err)})
+		c.JSON(500, ErrorResponse{Error: fmt.Sprintf("Failed to save file: %v", err)})
 		return
 	}
 
-	// Create source
+	// Determine source type
+	sourceType := "file"
+	audioExts := map[string]bool{
+		".mp3": true, ".wav": true, ".m4a": true, ".aac": true,
+		".flac": true, ".ogg": true, ".wma": true, ".opus": true,
+		".mp4": true, ".avi": true, ".mkv": true, ".mov": true, ".webm": true,
+	}
+	if audioExts[extLower] {
+		sourceType = "audio"
+	}
+
+	// Create source with pending status
 	source := &Source{
+		ID:         uuid.New().String(),
 		NotebookID: notebookID,
-		Name:       file.Filename, // Keep original filename for display
-		Type:       "file",
-		FileName:   uniqueFileName, // Store unique filename
+		Name:       file.Filename,
+		Type:       sourceType,
+		FileName:   uniqueFileName,
 		FileSize:   file.Size,
+		Status:     "pending",
+		Progress:   0,
 		Metadata:   map[string]interface{}{"path": tempPath, "user_id": userID},
 	}
 
-	// Extract content
-	content, err := s.vectorStore.ExtractDocument(ctx, tempPath)
-	if err != nil {
-		golog.Errorf("failed to extract document content: %v", err)
-		// Clean up uploaded file on error
-		os.Remove(tempPath)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to extract document content: %v", err)})
-		return
-	}
-	source.Content = content
-
-	if err := s.store.CreateSource(ctx, source); err != nil {
+	// Save source to database first
+	if err := s.store.CreateSource(c.Request.Context(), source); err != nil {
 		golog.Errorf("failed to create source: %v", err)
-		// Clean up uploaded file on error
 		os.Remove(tempPath)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to create source"})
+		c.JSON(500, ErrorResponse{Error: "Failed to create source"})
 		return
 	}
 
-	// Log file upload activity
+	// Log activity
+	ctx := c.Request.Context()
 	activityLog := &ActivityLog{
 		UserID:       userID,
 		Action:       "upload_file",
@@ -718,33 +751,21 @@ func (s *Server) handleUpload(c *gin.Context) {
 		IPAddress:    c.ClientIP(),
 		UserAgent:    c.GetHeader("User-Agent"),
 	}
-	if err := s.store.LogActivity(ctx, activityLog); err != nil {
-		golog.Errorf("failed to log file upload activity: %v", err)
-	}
+	s.store.LogActivity(ctx, activityLog)
 
-	// Ingest into vector store (synchronous for immediate availability)
-	// Get chunk count from vector store stats
-	stats, _ := s.vectorStore.GetStats(ctx)
-	totalDocsBefore := stats.TotalDocuments
+	// Enqueue for background processing
+	GetProcessingQueue().enqueue(ProcessingTask{
+		SourceID:   source.ID,
+		FilePath:   tempPath,
+		NotebookID: notebookID,
+		SourceType: sourceType,
+		FileName:   file.Filename,
+	})
 
-	if source.Content != "" {
-		if _, err := s.vectorStore.IngestText(ctx, notebookID, source.Name, source.Content); err != nil {
-			golog.Errorf("failed to ingest document: %v", err)
-		} else {
-			// Get updated stats to calculate chunk count
-			stats, _ = s.vectorStore.GetStats(ctx)
-			chunkCount := stats.TotalDocuments - totalDocsBefore
-
-			// Update source with chunk count
-			source.ChunkCount = chunkCount
-
-			// Update in database
-			s.store.UpdateSourceChunkCount(ctx, source.ID, chunkCount)
-		}
-	}
-
-	c.JSON(http.StatusCreated, source)
+	// Return immediately with source info
+	c.JSON(201, source)
 }
+
 
 // Note handlers
 
@@ -1632,3 +1653,195 @@ func (s *Server) handleListPublicNotebooks(c *gin.Context) {
 }
 
 // handleServePublicFile serves files for public notebooks
+
+// Processing task types and queue
+type ProcessingTask struct {
+	SourceID   string
+	FilePath   string
+	NotebookID string
+	SourceType string
+	FileName   string
+	FileSize   int64
+}
+
+type ProcessingQueue struct {
+	tasks chan ProcessingTask
+	store *CachedStore
+	vs    *VectorStore
+	agent *Agent
+	mu    sync.Mutex
+}
+
+var processingQueue *ProcessingQueue
+
+var processingQueueMutex sync.Mutex
+
+// GetProcessingQueue returns the singleton processing queue
+func GetProcessingQueue() *ProcessingQueue {
+	processingQueueMutex.Lock()
+	defer processingQueueMutex.Unlock()
+	
+	if processingQueue == nil {
+		processingQueue = &ProcessingQueue{
+			tasks: make(chan ProcessingTask, 100),
+		}
+		// Start worker
+		go processingQueue.worker()
+	}
+	return processingQueue
+}
+
+// InitProcessingQueue initializes the processing queue with required dependencies
+func InitProcessingQueue(s *CachedStore, vs *VectorStore, agent *Agent) {
+	q := GetProcessingQueue()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.store = s
+	q.vs = vs
+	q.agent = agent
+}
+
+// worker processes files in the background
+func (pq *ProcessingQueue) worker() {
+	for task := range pq.tasks {
+		pq.processTask(task)
+	}
+}
+
+// processTask processes a single file
+func (pq *ProcessingQueue) processTask(task ProcessingTask) {
+	fmt.Printf("[Processing] Starting to process file: %s\n", task.FileName)
+
+	ctx := context.Background()
+	startTime := time.Now()
+
+	// Calculate estimated processing time: 1 minute per MB (60 seconds per MB)
+	fileSizeMB := float64(task.FileSize) / (1024 * 1024)
+	estimatedSeconds := fileSizeMB * 60
+	if estimatedSeconds < 10 {
+		estimatedSeconds = 10 // Minimum 10 seconds
+	}
+
+	// Start fake progress in background
+	done := make(chan bool)
+	go pq.updateFakeProgress(ctx, task.SourceID, task.FileName, startTime, estimatedSeconds, done)
+
+	// Update status to processing
+	golog.Infof("[Processing] Updating source %s status to processing (5%%)", task.SourceID)
+	if err := pq.store.UpdateSourceStatus(ctx, task.SourceID, "processing", 5, ""); err != nil {
+		golog.Errorf("failed to update source status: %v", err)
+	}
+
+	// Extract content based on file type
+	var content string
+	var err error
+
+	if task.SourceType == "audio" {
+		// Audio transcription
+		content, err = pq.vs.ExtractDocument(ctx, task.FilePath)
+		if err != nil {
+			golog.Errorf("failed to transcribe audio: %v", err)
+			done <- true
+			pq.store.UpdateSourceStatus(ctx, task.SourceID, "error", 0, err.Error())
+			return
+		}
+
+		// Post-process transcribed text with LLM to add punctuation
+		if pq.agent != nil && content != "" {
+			llm := pq.agent.GetLLM()
+
+			// Use LLM to format the text
+			prompt := fmt.Sprintf("请为以下文字添加标点符号和分段：\n\n%s\n\n只输出添加标点符号后的文字，不要添加任何说明、前言或格式。", content)
+
+			formattedContent, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+			if err != nil {
+				golog.Warnf("failed to format transcribed text with LLM: %v, using original text", err)
+				// Continue with original text if LLM fails
+			} else {
+				// Extract content from response
+				if formattedContent != "" {
+					content = formattedContent
+					golog.Infof("Successfully formatted transcribed text with LLM")
+				}
+			}
+		}
+	} else {
+		// Regular document extraction
+		content, err = pq.vs.ExtractDocument(ctx, task.FilePath)
+		if err != nil {
+			golog.Errorf("failed to extract document: %v", err)
+			done <- true
+			pq.store.UpdateSourceStatus(ctx, task.SourceID, "error", 0, err.Error())
+			return
+		}
+	}
+
+	// Ingest into vector store
+	stats, _ := pq.vs.GetStats(ctx)
+	totalDocsBefore := stats.TotalDocuments
+
+	if content != "" {
+		if _, err := pq.vs.IngestText(ctx, task.NotebookID, task.FileName, content); err != nil {
+			golog.Errorf("failed to ingest document: %v", err)
+			done <- true
+			pq.store.UpdateSourceStatus(ctx, task.SourceID, "error", 95, err.Error())
+			return
+		}
+
+		// Calculate chunk count
+		stats, _ = pq.vs.GetStats(ctx)
+		chunkCount := stats.TotalDocuments - totalDocsBefore
+
+		// Update source with content and chunk count
+		pq.store.UpdateSourceContent(ctx, task.SourceID, content, chunkCount)
+	}
+
+	// Stop fake progress and mark as completed with 100%
+	done <- true
+	time.Sleep(100 * time.Millisecond) // Give one last update time
+	pq.store.UpdateSourceStatus(ctx, task.SourceID, "completed", 100, "")
+	fmt.Printf("[Processing] Completed processing file: %s\n", task.FileName)
+}
+
+// enqueue adds a task to the processing queue
+func (pq *ProcessingQueue) enqueue(task ProcessingTask) {
+	pq.tasks <- task
+}
+
+// updateFakeProgress updates progress based on time elapsed (1 minute per MB)
+func (pq *ProcessingQueue) updateFakeProgress(ctx context.Context, sourceID, fileName string, startTime time.Time, estimatedSeconds float64, done chan bool) {
+	golog.Infof("[Processing] Starting fake progress for source %s (estimated %.1f seconds)", sourceID, estimatedSeconds)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			golog.Infof("[Processing] Stopping fake progress for source %s", sourceID)
+			return
+		case <-ticker.C:
+			elapsed := time.Since(startTime).Seconds()
+			progress := int((elapsed / estimatedSeconds) * 100)
+
+			// Cap at 95% until actually done
+			if progress > 95 {
+				progress = 95
+			}
+
+			// Update status message based on progress
+			var statusMsg string
+			if progress < 30 {
+				statusMsg = "正在处理音频..."
+			} else if progress < 80 {
+				statusMsg = "正在整理文字..."
+			} else {
+				statusMsg = "正在建立索引..."
+			}
+
+			golog.Infof("[Processing] Updating source %s progress to %d%% (%s)", sourceID, progress, statusMsg)
+			if err := pq.store.UpdateSourceStatus(ctx, sourceID, "processing", progress, statusMsg); err != nil {
+				golog.Errorf("failed to update progress: %v", err)
+			}
+		}
+	}
+}

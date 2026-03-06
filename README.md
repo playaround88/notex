@@ -21,7 +21,7 @@ An AI-powered knowledge management application that lets you create intelligent 
 
 ## ✨ Features
 
-- 📚 **Multiple Source Types** - Upload PDFs, text files, Markdown, DOCX, HTML documents, and video URLs (YouTube, Bilibili with automatic subtitle extraction)
+- 📚 **Multiple Source Types** - Upload PDFs, text files, Markdown, DOCX, HTML documents, audio files (MP3, WAV, M4A, etc.), and video URLs (YouTube, Bilibili with automatic subtitle extraction)
 - 🤖 **AI-Powered Chat** - Ask questions and get answers based on your sources
 - ✨ **Multiple Transformations** - Generate summaries, FAQs, study guides, outlines, timelines, glossaries, quizzes, mindmaps, infographics and podcast scripts
 - 📊 **Infographic Generation** - Create beautiful, hand-drawn style infographics from your content using Google's Gemini Nano Banana
@@ -38,6 +38,7 @@ An AI-powered knowledge management application that lets you create intelligent 
 - An LLM API key (OpenAI) or Ollama running locally
 - [markitdown](https://github.com/microsoft/markitdown) (optional, for better document conversion)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) (optional, for extracting subtitles from YouTube and Bilibili videos)
+- [vosk-transcriber](https://github.com/alphacep/vosk-transcriber) (optional, for transcribing audio files to text)
 
 ### Installation
 
@@ -171,6 +172,7 @@ You can add content to your notebook in three ways:
 - Click the "+" button in the Sources panel
 - Drag and drop or browse for files
 - Supported: PDF, TXT, MD, DOCX, HTML
+- Audio files: MP3, WAV, M4A, AAC, FLAC, OGG, WMA, OPUS (auto-transcribed to text)
 
 **Paste Text**
 
@@ -229,6 +231,10 @@ CHUNK_OVERLAP=200      # Overlap between chunks
 
 # Document Conversion
 ENABLE_MARKITDOWN=true  # Use Microsoft markitdown for better PDF/DOCX conversion
+
+# Audio Transcription
+ENABLE_VOSK_TRANSCRIBER=false  # Enable audio file transcription
+VOSK_MODEL_PATH=/usr/local/share/vosk-model-en  # Path to vosk model
 
 # Podcast Generation
 ENABLE_PODCAST=true
