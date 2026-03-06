@@ -931,7 +931,7 @@ func (s *Server) handleTransform(c *gin.Context) {
 		extra := "**注意：无论来源是什么语言，请务必使用中文**"
 		prompt := response.Content + "\n\n" + extra
 		imageModel := s.getImageModelForProvider()
-		imagePath, err := s.agent.provider.GenerateImage(ctx, imageModel, prompt, userID)
+		imagePath, err := s.agent.provider.GenerateImage(ctx, imageModel, prompt, userID, "infograph")
 		if err != nil {
 			golog.Errorf("failed to generate infographic image: %v", err)
 			metadata["image_error"] = err.Error()
@@ -958,7 +958,7 @@ func (s *Server) handleTransform(c *gin.Context) {
 				prompt := fmt.Sprintf("Style: %s\n\nSlide Content: %s", slides[0].Style, slide.Content)
 				prompt += "\n\n**注意：无论来源是什么语言，请务必使用中文**\n"
 				imageModel := s.getImageModelForProvider()
-				imagePath, err := s.agent.provider.GenerateImage(ctx, imageModel, prompt, userID)
+				imagePath, err := s.agent.provider.GenerateImage(ctx, imageModel, prompt, userID, fmt.Sprintf("ppt_slide_%d", i+1))
 				if err != nil {
 					golog.Errorf("failed to generate slide %d: %v", i+1, err)
 					continue

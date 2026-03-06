@@ -40,7 +40,7 @@ func NewGLMImageClient(apiKey string) *GLMImageClient {
 }
 
 // GenerateImage generates an image using GLM-Image API
-func (g *GLMImageClient) GenerateImage(ctx context.Context, model, prompt string, userID string) (string, error) {
+func (g *GLMImageClient) GenerateImage(ctx context.Context, model, prompt string, userID, imageType string) (string, error) {
 	if g.apiKey == "" {
 		golog.Errorf("glm_api_key is not set")
 		return "", fmt.Errorf("glm_api_key is not set")
@@ -142,7 +142,7 @@ func (g *GLMImageClient) GenerateImage(ctx context.Context, model, prompt string
 	golog.Infof("image data received successfully (%d bytes), saving...", len(imageData))
 
 	// Save the image to user-specific directory
-	fileName := fmt.Sprintf("infograph_%d.png", time.Now().UnixNano())
+	fileName := fmt.Sprintf("%s_%d.png", imageType, time.Now().UnixNano())
 	var uploadDir string
 	if userID != "" {
 		uploadDir = filepath.Join("./data/uploads", userID)
@@ -160,7 +160,7 @@ func (g *GLMImageClient) GenerateImage(ctx context.Context, model, prompt string
 		return "", fmt.Errorf("failed to save image: %w", err)
 	}
 
-	golog.Infof("infographic saved to %s", filePath)
+	golog.Infof("%s saved to %s", imageType, filePath)
 	return filePath, nil
 }
 

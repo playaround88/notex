@@ -57,7 +57,7 @@ func NewAgent(cfg Config, vectorStore *VectorStore) (*Agent, error) {
 		}
 		provider = NewZImageClient(cfg.ZImageAPIKey)
 	case "gemini":
-		provider = NewGeminiClient(cfg.GoogleAPIKey, llm)
+		provider = NewGeminiClient(cfg.GoogleAPIKey, cfg.GeminiBaseURL, llm)
 	default:
 		return nil, fmt.Errorf("unknown image provider: %s (supported: gemini, glm, zimage)", cfg.ImageProvider)
 	}

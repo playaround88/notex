@@ -39,7 +39,7 @@ func NewZImageClient(apiKey string) *ZImageClient {
 }
 
 // GenerateImage generates an image using Z-Image API
-func (z *ZImageClient) GenerateImage(ctx context.Context, model, prompt string, userID string) (string, error) {
+func (z *ZImageClient) GenerateImage(ctx context.Context, model, prompt string, userID, imageType string) (string, error) {
 	if z.apiKey == "" {
 		golog.Errorf("zimage_api_key is not set")
 		return "", fmt.Errorf("zimage_api_key is not set")
@@ -136,7 +136,7 @@ func (z *ZImageClient) GenerateImage(ctx context.Context, model, prompt string, 
 	golog.Infof("image data received successfully (%d bytes), saving...", len(imageData))
 
 	// Save the image to user-specific directory
-	fileName := fmt.Sprintf("infograph_%d.png", time.Now().UnixNano())
+	fileName := fmt.Sprintf("%s_%d.png", imageType, time.Now().UnixNano())
 	var uploadDir string
 	if userID != "" {
 		uploadDir = filepath.Join("./data/uploads", userID)
@@ -154,7 +154,7 @@ func (z *ZImageClient) GenerateImage(ctx context.Context, model, prompt string, 
 		return "", fmt.Errorf("failed to save image: %w", err)
 	}
 
-	golog.Infof("infographic saved to %s", filePath)
+	golog.Infof("%s saved to %s", imageType, filePath)
 	return filePath, nil
 }
 

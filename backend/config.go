@@ -21,6 +21,7 @@ type Config struct {
 	OpenAIModel    string
 	EmbeddingModel string
 	GoogleAPIKey   string
+	GeminiBaseURL  string
 	OllamaBaseURL  string
 	OllamaModel    string
 
@@ -113,12 +114,13 @@ func LoadConfig() Config {
 		OpenAIModel:                  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
 		EmbeddingModel:               getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
 		GoogleAPIKey:                 getEnv("GOOGLE_API_KEY", ""),
+		GeminiBaseURL:                getEnv("GEMINI_BASE_URL", ""),
 		OllamaBaseURL:                getEnv("OLLAMA_BASE_URL", "http://localhost:11434"),
 		OllamaModel:                  getEnv("OLLAMA_MODEL", "llama3.2"),
 		ImageProvider:                getEnv("IMAGE_PROVIDER", "gemini"),
 		GLMAPIKey:                    getEnv("GLM_API_KEY", ""),
 		GLMImageModel:                getEnv("GLM_IMAGE_MODEL", "glm-image"),
-		GeminiImageModel:             getEnv("GEMINI_IMAGE_MODEL", "gemini-2.0-flash-exp"),
+		GeminiImageModel:             getEnv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image-preview"),
 		ZImageAPIKey:                 getEnv("ZIMAGE_API_KEY", ""),
 		ZImageModel:                  getEnv("ZIMAGE_MODEL", "z-image-turbo"),
 		VectorStoreType:              getEnv("VECTOR_STORE_TYPE", "sqlite"),

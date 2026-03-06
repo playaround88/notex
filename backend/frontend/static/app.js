@@ -2607,9 +2607,26 @@ class OpenNotebook {
                                 continue;
                             }
 
-                            // Fix root if missing double parens
-                            if (trimmed.startsWith('root') && !line.includes('((')) {
-                                line = line.replace(/root\s+(.+)/, 'root(($1))');
+                            // Fix root - handle various formats
+                            // Formats to handle:
+                            // - root((content)) - already correct
+                            // - root(content) - need double parens
+                            // - root content - need double parens
+                            // - root "content" - need double parens
+                            if (trimmed.startsWith('root')) {
+                                // Extract content from root
+                                let rootContent = '';
+                                // Match root followed by content in various formats
+                                const rootMatch = trimmed.match(/^root\s*(?:\(?\(?["']?(.+?)["']?\)?\)?\))?$/);
+                                if (rootMatch && rootMatch[1]) {
+                                    rootContent = rootMatch[1].replace(/&quot;/g, '').replace(/["']/g, '').trim();
+                                    const indentMatch = line.match(/^(\s*)/);
+                                    const indent = indentMatch ? indentMatch[1] : '';
+                                    processedLines.push(indent + 'root((' + rootContent + '))');
+                                    continue;
+                                }
+                                // Fallback: just wrap everything after "root" in double parens
+                                line = line.replace(/root\s*(.+)/, 'root(($1))');
                                 processedLines.push(line);
                                 continue;
                             }
@@ -3639,14 +3656,7 @@ class ResourceTabManager {
         tabBtn.dataset.tab = tabData.tabId;
         tabBtn.innerHTML = `
             <span class="tab-title">${this.truncateText(tabData.sourceName, 20)}</span>
-            <span class="tab-close">×</span>
         `;
-
-        // Close button event
-        tabBtn.querySelector('.tab-close').addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.closeTab(tabData.tabId);
-        });
 
         // Tab click event
         tabBtn.addEventListener('click', () => {

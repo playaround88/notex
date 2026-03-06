@@ -301,6 +301,17 @@ body {
     border-color: var(--accent-primary);
 }
 
+/* Reset btnAddSource styles when panel is not collapsed */
+.panel-left:not(.left-collapsed) #btnAddSource,
+.main-grid:not(.left-collapsed) #btnAddSource {
+    width: 32px !important;
+    height: 32px !important;
+    background: transparent !important;
+    border-radius: var(--radius-md) !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
 .main-grid.left-collapsed #resizerLeft {
     visibility: hidden;
     pointer-events: none;
@@ -4160,6 +4171,13 @@ body {
     flex: 1;
     overflow-y: auto;
     padding: var(--space-md);
+    max-height: 400px;
+}
+
+.transcript-content.collapsed {
+    max-height: 0;
+    padding: 0;
+    overflow: hidden;
 }
 
 .transcript-text {
@@ -4167,6 +4185,8 @@ body {
     line-height: 1.6;
     color: var(--text-primary);
     margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
 }
 
 /* PDF Preview */
