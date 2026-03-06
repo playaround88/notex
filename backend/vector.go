@@ -350,12 +350,152 @@ func (vs *VectorStore) needsMarkitdown(ext string) bool {
 	return markitdownExts[ext]
 }
 
+
+// isVideoURL checks if the URL is from a video platform (YouTube, Bilibili)
+func isVideoURL(url string) bool {
+	patterns := []string{
+		"youtube.com",
+		"youtu.be",
+		"bilibili.com",
+		"b23.tv",
+	}
+	lowerURL := strings.ToLower(url)
+	for _, pattern := range patterns {
+		if strings.Contains(lowerURL, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractVideoSubtitle extracts subtitle from video URL using yt-dlp
+func (vs *VectorStore) extractVideoSubtitle(url string) (string, error) {
+	fmt.Printf("[VectorStore] Extracting subtitle from video: %s\n", url)
+
+	// Create temporary file for subtitle
+	tmpSubFile := filepath.Join(os.TempDir(), fmt.Sprintf("subtitle_%d.srt", os.Getpid()))
+
+	// Use yt-dlp to download subtitles
+	// --write-subs: write subtitles
+	// --sub-langs all: download all available languages
+	// --skip-download: don't download the video itself
+	// --sub-format srt: use SRT format
+	// -o: output file
+	cmd := exec.Command("yt-dlp",
+		"--write-subs",
+		"--sub-langs", "all",
+		"--skip-download",
+		"--sub-format", "srt",
+		"-o", tmpSubFile,
+		url,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("[VectorStore] yt-dlp error: %s\n", string(output))
+		return "", fmt.Errorf("failed to extract subtitle: %w, output: %s", err, string(output))
+	}
+
+	// Find the actual subtitle file (yt-dlp may add language suffix)
+	matches, _ := filepath.Glob(tmpSubFile + "*.srt")
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no subtitle file found")
+	}
+	actualSubFile := matches[0]
+
+	// Read the subtitle file
+	subContent, err := os.ReadFile(actualSubFile)
+	if err != nil {
+		os.Remove(actualSubFile)
+		return "", fmt.Errorf("failed to read subtitle file: %w", err)
+	}
+
+	// Clean up subtitle file
+	os.Remove(actualSubFile)
+
+	// Convert SRT to plain text format
+	textContent := vs.convertSRTToText(string(subContent))
+
+	fmt.Printf("[VectorStore] Subtitle extracted successfully, size: %d bytes\n", len(textContent))
+	return textContent, nil
+}
+
+// convertSRTToText converts SRT subtitle format to readable text
+func (vs *VectorStore) convertSRTToText(srtContent string) string {
+	lines := strings.Split(srtContent, "\n")
+	var result []string
+	currentText := []string{}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		
+		// Skip empty lines
+		if line == "" {
+			if len(currentText) > 0 {
+				result = append(result, strings.Join(currentText, " "))
+				currentText = []string{}
+			}
+			continue
+		}
+
+		// Skip sequence numbers (1, 2, 3, ...)
+		if _, err := fmt.Sscanf(line, "%d", new(int)); err == nil && len(line) < 10 {
+			if len(currentText) > 0 {
+				result = append(result, strings.Join(currentText, " "))
+				currentText = []string{}
+			}
+			continue
+		}
+
+		// Skip timestamp lines (00:00:00,000 --> 00:00:05,000)
+		if strings.Contains(line, "-->") {
+			if len(currentText) > 0 {
+				result = append(result, strings.Join(currentText, " "))
+				currentText = []string{}
+			}
+			continue
+		}
+
+		// Skip hex/hash lines (sometimes in SRT files)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Remove HTML tags and common subtitle artifacts
+		line = strings.ReplaceAll(line, "<i>", "")
+		line = strings.ReplaceAll(line, "</i>", "")
+		line = strings.ReplaceAll(line, "<b>", "")
+		line = strings.ReplaceAll(line, "</b>", "")
+		line = strings.ReplaceAll(line, "&lt;", "<")
+		line = strings.ReplaceAll(line, "&gt;", ">")
+		line = strings.ReplaceAll(line, "&amp;", "&")
+		line = strings.ReplaceAll(line, "&#39;", "'")
+		line = strings.ReplaceAll(line, "&quot;", "\"")
+
+		// Add to current text if it's not empty
+		if line != "" {
+			currentText = append(currentText, line)
+		}
+	}
+
+	// Don't forget the last segment
+	if len(currentText) > 0 {
+		result = append(result, strings.Join(currentText, " "))
+	}
+
+	return strings.Join(result, "\n")
+}
 // ExtractFromURL fetches and converts content from a URL using markitdown
 func (vs *VectorStore) ExtractFromURL(ctx context.Context, url string) (string, error) {
 	fmt.Printf("[VectorStore] Fetching content from URL: %s\n", url)
 
 	if !vs.cfg.EnableMarkitdown {
 		return "", fmt.Errorf("markitdown is disabled, cannot fetch URL content")
+	}
+
+	// Check if it's a video URL and extract subtitles
+	if isVideoURL(url) {
+		return vs.extractVideoSubtitle(url)
 	}
 
 	// Step 1: Use curl to download the webpage to a temporary HTML file
@@ -398,8 +538,6 @@ func (vs *VectorStore) ExtractFromURL(ctx context.Context, url string) (string, 
 	fmt.Printf("[VectorStore] URL content fetched and converted successfully, output size: %d bytes\n", len(content))
 	return string(content), nil
 }
-
-// convertWithMarkitdown converts a document to Markdown using the markitdown CLI tool
 func (vs *VectorStore) convertWithMarkitdown(filePath string) (string, error) {
 	fmt.Printf("[VectorStore] Converting with markitdown: %s\n", filePath)
 

@@ -21,7 +21,7 @@ An AI-powered knowledge management application that lets you create intelligent 
 
 ## ✨ Features
 
-- 📚 **Multiple Source Types** - Upload PDFs, text files, Markdown, DOCX, and HTML documents
+- 📚 **Multiple Source Types** - Upload PDFs, text files, Markdown, DOCX, HTML documents, and video URLs (YouTube, Bilibili with automatic subtitle extraction)
 - 🤖 **AI-Powered Chat** - Ask questions and get answers based on your sources
 - ✨ **Multiple Transformations** - Generate summaries, FAQs, study guides, outlines, timelines, glossaries, quizzes, mindmaps, infographics and podcast scripts
 - 📊 **Infographic Generation** - Create beautiful, hand-drawn style infographics from your content using Google's Gemini Nano Banana
@@ -36,6 +36,8 @@ An AI-powered knowledge management application that lets you create intelligent 
 
 - Go 1.23 or later
 - An LLM API key (OpenAI) or Ollama running locally
+- [markitdown](https://github.com/microsoft/markitdown) (optional, for better document conversion)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) (optional, for extracting subtitles from YouTube and Bilibili videos)
 
 ### Installation
 
@@ -179,6 +181,8 @@ You can add content to your notebook in three ways:
 
 - Select the "URL" tab
 - Enter the URL and optional title
+- Supports web pages and video URLs (YouTube, Bilibili)
+- For videos, subtitles are automatically extracted and used as content
 
 ### Chatting with Sources
 

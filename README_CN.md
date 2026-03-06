@@ -21,7 +21,7 @@ AI 驱动知识管理应用程序，让您从文档中创建智能笔记本。
 
 ## ✨ 特性
 
-- 📚 **多种来源类型** - 支持上传 PDF、文本文件、Markdown、DOCX 和 HTML 文档
+- 📚 **多种来源类型** - 支持上传 PDF、文本文件、Markdown、DOCX、HTML 文档和视频 URL（YouTube、Bilibili 自动提取字幕）
 - 🤖 **AI 驱动对话** - 基于您的来源提问并获得答案
 - ✨ **多种转换** - 生成摘要、FAQ、学习指南、大纲、时间线、词汇表、测验、思维导图、信息图和播客脚本
 - 📊 **信息图生成** - 使用 Google Gemini Nano Banana 从您的内容创建精美的手绘风格信息图
@@ -36,6 +36,8 @@ AI 驱动知识管理应用程序，让您从文档中创建智能笔记本。
 
 - Go 1.23 或更高版本
 - LLM API 密钥 (OpenAI) 或本地运行的 Ollama
+- [markitdown](https://github.com/microsoft/markitdown)（可选，用于更好的文档转换）
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)（可选，用于从 YouTube 和 Bilibili 视频提取字幕）
 
 ### 安装
 
@@ -179,6 +181,8 @@ go build -o notex .
 
 - 选择 "URL" 标签
 - 输入 URL 和可选标题
+- 支持网页和视频 URL（YouTube、Bilibili）
+- 对于视频，会自动提取字幕作为内容
 
 ### 与来源对话
 
