@@ -84,11 +84,6 @@ func (s *Store) initSchema() error {
 		return err
 	}
 
-	// Migration: Add status tracking columns to sources table
-	if err := s.migrateSourceStatusColumns(); err != nil {
-		return err
-	}
-
 	// Migration: Add hash_id column to users table for existing databases
 	if err := s.migrateAddHashIDColumn(); err != nil {
 		return err
@@ -119,6 +114,14 @@ func (s *Store) initSchema() error {
 		// Add public_token column
 		if _, err := s.db.Exec("ALTER TABLE notebooks ADD COLUMN public_token TEXT"); err != nil {
 			return fmt.Errorf("failed to add public_token column to notebooks: %w", err)
+		}
+	}
+
+	// Migration: Add status tracking columns to sources table
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sources') WHERE name = 'status'`).Scan(&count)
+	if err == nil && count == 0 {
+		if err := s.migrateSourceStatusColumns(); err != nil {
+			return err
 		}
 	}
 
@@ -223,21 +226,10 @@ func (s *Store) initSchema() error {
 
 // migrateSourceStatusColumns adds status tracking columns to sources table
 func (s *Store) migrateSourceStatusColumns() error {
-	// Check if status column exists
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sources') WHERE name = 'status'`).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("failed to check status column: %w", err)
-	}
-
-	if count > 0 {
-		return nil // Columns already exist
-	}
-
 	log.Printf("🔄 Adding status tracking columns to sources table...")
-	
+
 	// Add status column
-	_, err = s.db.Exec(`ALTER TABLE sources ADD COLUMN status TEXT DEFAULT 'completed'`)
+	_, err := s.db.Exec(`ALTER TABLE sources ADD COLUMN status TEXT DEFAULT 'completed'`)
 	if err != nil {
 		return fmt.Errorf("failed to add status column: %w", err)
 	}
